@@ -37,7 +37,9 @@ class PolymarketClient:
         return params
 
     def fetch_page(self, *, cursor: str | None, offset: int) -> dict[str, Any]:
-        response = self.client.get(self.markets_path, params=self._build_params(cursor=cursor, offset=offset))
+        response = self.client.get(
+            self.markets_path, params=self._build_params(cursor=cursor, offset=offset)
+        )
         response.raise_for_status()
         return response.json()
 
@@ -56,10 +58,14 @@ class PolymarketClient:
                     payload.get("data"),
                     payload.get("result"),
                 )
-                raw_markets = next((value for value in candidates if isinstance(value, list)), [])
+                raw_markets = next(
+                    (value for value in candidates if isinstance(value, list)), []
+                )
                 if not raw_markets:
                     single_market = payload.get("market")
-                    raw_markets = [single_market] if isinstance(single_market, dict) else []
+                    raw_markets = (
+                        [single_market] if isinstance(single_market, dict) else []
+                    )
                 next_cursor = payload.get("cursor") or payload.get("nextCursor")
             else:
                 raw_markets = []
