@@ -37,6 +37,7 @@ class NormalizedMarket:
     description: str | None
     icon_url: str | None
     contracts: list[NormalizedContract]
+    raw_data: dict | None
 
 
 def upsert_market(session: Session, market: NormalizedMarket) -> None:
@@ -57,6 +58,7 @@ def upsert_market(session: Session, market: NormalizedMarket) -> None:
     existing.status = market.status
     existing.description = market.description
     existing.icon_url = market.icon_url
+    existing.raw_data = market.raw_data
 
     existing_contracts = {contract.contract_id: contract for contract in existing.contracts}
 

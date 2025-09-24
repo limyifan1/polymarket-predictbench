@@ -1,10 +1,43 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Iterable
 
 import httpx
+from loguru import logger
 
 from app.core.config import settings
+
+
+ALLOWED_FILTER_KEYS = {
+    "limit",
+    "offset",
+    "order",
+    "ascending",
+    "id",
+    "slug",
+    "clob_token_ids",
+    "condition_ids",
+    "market_maker_address",
+    "liquidity_num_min",
+    "liquidity_num_max",
+    "volume_num_min",
+    "volume_num_max",
+    "start_date_min",
+    "start_date_max",
+    "end_date_min",
+    "end_date_max",
+    "tag_id",
+    "related_tags",
+    "cyom",
+    "uma_resolution_status",
+    "game_id",
+    "sports_market_types",
+    "rewards_min_size",
+    "question_ids",
+    "include_tag",
+    "closed",
+}
 
 
 class PolymarketClient:
@@ -16,13 +49,23 @@ class PolymarketClient:
         base_url: str | None = None,
         markets_path: str | None = None,
         page_size: int | None = None,
-        market_status: str | None = None,
+        filters: dict[str, Any] | None = None,
         timeout: float = 10.0,
     ) -> None:
         self.base_url = base_url or str(settings.polymarket_base_url)
         self.markets_path = markets_path or settings.polymarket_markets_path
         self.page_size = page_size or settings.ingestion_page_size
-        self.market_status = market_status or settings.ingestion_status
+        base_filters = settings.ingestion_filters if filters is None else filters
+        normalized_filters = dict(base_filters)
+        self.filters = {
+            key: value for key, value in normalized_filters.items() if key in ALLOWED_FILTER_KEYS
+        }
+        dropped_filters = sorted(set(normalized_filters) - ALLOWED_FILTER_KEYS)
+        if dropped_filters:
+            logger.warning(
+                "Dropped unsupported Polymarket query filters from configuration: {}",
+                ", ".join(dropped_filters),
+            )
         self.timeout = timeout
         self.client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
@@ -30,16 +73,37 @@ class PolymarketClient:
         params: dict[str, Any] = {
             "limit": self.page_size,
             "offset": offset,
-            "status": self.market_status,
         }
         if cursor:
             params["cursor"] = cursor
+        if self.filters:
+            for key, value in self.filters.items():
+                serialized = self._serialize_filter_value(value)
+                if serialized is not None:
+                    params[key] = serialized
         return params
 
+    @staticmethod
+    def _serialize_filter_value(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            parts: list[str] = []
+            for item in value:
+                serialized = PolymarketClient._serialize_filter_value(item)
+                if serialized is not None:
+                    parts.append(serialized)
+            return ",".join(parts) if parts else None
+        return str(value)
+
     def fetch_page(self, *, cursor: str | None, offset: int) -> dict[str, Any]:
-        response = self.client.get(
-            self.markets_path, params=self._build_params(cursor=cursor, offset=offset)
-        )
+        params = self._build_params(cursor=cursor, offset=offset)
+        logger.info("Polymarket GET {} params={}", self.markets_path, params)
+        response = self.client.get(self.markets_path, params=params)
         response.raise_for_status()
         return response.json()
 

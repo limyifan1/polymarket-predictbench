@@ -47,6 +47,7 @@ class Market(Base):
 
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     contracts: Mapped[list["Contract"]] = relationship(
         "Contract", back_populates="market", cascade="all, delete-orphan"

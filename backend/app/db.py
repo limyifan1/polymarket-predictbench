@@ -30,7 +30,10 @@ def _create_engine(url: str):
 
 
 def _create_session_factory(engine) -> sessionmaker[Session]:
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    # Enable autoflush so repeated upserts in a single transaction can see newly
+    # added objects via Session.get; without this, offset pagination returning the
+    # same market twice would surface as a UNIQUE constraint violation.
+    return sessionmaker(bind=engine, autoflush=True, autocommit=False, future=True)
 
 
 def _build_db_components(url: str):

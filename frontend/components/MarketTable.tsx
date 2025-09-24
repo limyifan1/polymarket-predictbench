@@ -4,6 +4,17 @@ import { useMemo } from "react";
 import { formatDateTime } from "@/lib/date";
 import type { Market } from "@/types/market";
 
+const CLOSE_DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
+  timeZone: "UTC",
+  timeZoneName: "short",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+};
+
 function formatCurrency(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "-";
@@ -20,6 +31,10 @@ function formatProbability(value: number | null | undefined): string {
 
 function formatDate(value: string | null | undefined): string {
   return formatDateTime(value);
+}
+
+function formatCloseDate(value: string | null | undefined): string {
+  return formatDateTime(value, CLOSE_DATE_FORMAT_OPTIONS);
 }
 
 export function MarketTable({ markets }: { markets: Market[] }) {
@@ -40,7 +55,7 @@ export function MarketTable({ markets }: { markets: Market[] }) {
         <thead>
           <tr>
             <th>Question</th>
-            <th>Close Date</th>
+            <th>Close Date (UTC)</th>
             <th>Volume</th>
             <th>Liquidity</th>
             <th>Top Outcome</th>
@@ -53,17 +68,32 @@ export function MarketTable({ markets }: { markets: Market[] }) {
             return (
               <tr key={market.market_id}>
                 <td>
-                  <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>{market.question}</div>
-                  <div style={{ display: "flex", gap: "0.5rem", fontSize: "0.75rem", color: "#94a3b8" }}>
-                    {market.category && <span className="badge">{market.category}</span>}
+                  <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                    {market.question}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "0.5rem",
+                      fontSize: "0.75rem",
+                      color: "#94a3b8",
+                    }}
+                  >
+                    {market.category && (
+                      <span className="badge">{market.category}</span>
+                    )}
                     <span>Last sync: {formatDate(market.last_synced_at)}</span>
                   </div>
                 </td>
-                <td>{formatDate(market.close_time)}</td>
+                <td>{formatCloseDate(market.close_time)}</td>
                 <td>{formatCurrency(market.volume_usd)}</td>
                 <td>{formatCurrency(market.liquidity_usd)}</td>
                 <td>{topOutcome?.name ?? "-"}</td>
-                <td>{formatProbability(topOutcome?.implied_probability ?? topOutcome?.current_price)}</td>
+                <td>
+                  {formatProbability(
+                    topOutcome?.implied_probability ?? topOutcome?.current_price
+                  )}
+                </td>
               </tr>
             );
           })}

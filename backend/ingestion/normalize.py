@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any
 
 from dateutil import parser as date_parser
@@ -135,6 +134,8 @@ def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
     contracts_raw = _build_contracts(raw_market, market_id)
     contracts = [normalize_contract(contract, market_id) for contract in contracts_raw]
 
+    close_time = _parse_datetime(raw_market.get("closeTime") or raw_market.get("endDate"))
+
     return crud.NormalizedMarket(
         market_id=market_id,
         slug=raw_market.get("slug"),
@@ -142,7 +143,7 @@ def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
         category=raw_market.get("category"),
         sub_category=raw_market.get("subCategory") or raw_market.get("subcategory"),
         open_time=_parse_datetime(raw_market.get("openTime") or raw_market.get("startDate")),
-        close_time=_parse_datetime(raw_market.get("closeTime") or raw_market.get("endDate")),
+        close_time=close_time,
         volume_usd=_parse_float(raw_market.get("volume") or raw_market.get("volumeUsd")),
         liquidity_usd=_parse_float(raw_market.get("liquidity") or raw_market.get("liquidityUsd")),
         fee_bps=_normalize_fee_bps(raw_market.get("fee")),
@@ -150,4 +151,5 @@ def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
         description=raw_market.get("description"),
         icon_url=raw_market.get("icon") or raw_market.get("image"),
         contracts=contracts,
+        raw_data=raw_market,
     )

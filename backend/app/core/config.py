@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Any
 
 from pydantic import AnyUrl, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,9 +26,9 @@ class Settings(BaseSettings):
     ingestion_page_size: int = Field(
         200, description="Number of markets to fetch per page"
     )
-    ingestion_status: str = Field(
-        "open",
-        description="Market status to ingest (open, closed, resolved)",
+    ingestion_filters: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional query parameters applied when fetching Polymarket markets",
     )
 
 

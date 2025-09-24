@@ -35,7 +35,7 @@ For each market, capture:
 - (Optional) price history: either via `/markets/:id/trades` or external price snapshot service.
 
 ### 3.3 Ingestion Implementation
-1. **Connector**: Create a small Python module using `httpx` or `requests` to pull open markets. Support pagination via `cursor` or `limit/offset` parameters.
+1. **Connector**: Create a small Python module using `httpx` or `requests` to pull open markets. Support pagination via `limit/offset` parameters and expose configurable query filters (e.g., `closed=false`, `order=volume_num`, `ascending=false`).
 2. **Normalization**: Map raw JSON into a Pydantic (or dataclass) schema to enforce types. Convert timestamps to UTC `datetime` objects.
 3. **Persistence**: Upsert markets into PostgreSQL using SQLAlchemy or Prisma. Maintain `markets` and `contracts` tables with unique constraints on `id`.
 4. **Scheduling**: Trigger ingestion every 5 minutes with Prefect, APScheduler, or GitHub Actions (if running in the cloud). Store job metadata in a `ingestion_runs` table for observability.
