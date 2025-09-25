@@ -75,11 +75,22 @@ class Settings(BaseSettings):
     @classmethod
     @field_validator("database_url", "supabase_db_url", mode="before")
     def _normalize_postgres_urls(cls, value: Any) -> Any:
-        if value is None:
+        if value is None or not isinstance(value, str):
             return value
-        if isinstance(value, str) and value.startswith("postgres://"):
-            return "postgresql://" + value[len("postgres://") :]
-        return value
+
+        if value.startswith("postgresql+psycopg://") or value.startswith(
+            "postgresql+asyncpg://"
+        ):
+            return value
+
+        normalized = value
+        if normalized.startswith("postgres://"):
+            normalized = "postgresql://" + normalized[len("postgres://") :]
+
+        if normalized.startswith("postgresql://"):
+            normalized = "postgresql+psycopg://" + normalized[len("postgresql://") :]
+
+        return normalized
 
     @classmethod
     @field_validator("supabase_db_url")
@@ -88,11 +99,7 @@ class Settings(BaseSettings):
             return value
         url_str = str(value)
         scheme = url_str.split(":", 1)[0].lower()
-        valid_schemes = {
-            "postgresql",
-            "postgresql+psycopg",
-            "postgresql+asyncpg",
-        }
+        valid_schemes = {"postgresql+psycopg", "postgresql+asyncpg"}
         if scheme not in valid_schemes:
             raise ValueError(
                 "SUPABASE_DB_URL must be a PostgreSQL connection string (e.g. postgresql://...)."
