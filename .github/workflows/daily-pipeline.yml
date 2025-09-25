@@ -8,7 +8,7 @@ on:
       window_days:
         description: 'Override window-days argument'
         required: false
-        default: ''
+        default: '7'
       target_date:
         description: 'Optional explicit target date (YYYY-MM-DD)'
         required: false
