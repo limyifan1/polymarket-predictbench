@@ -1,18 +1,39 @@
 from functools import lru_cache
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import AnyUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _ensure_sqlalchemy_postgres_scheme(value: str) -> str:
-    if value.startswith("postgresql+psycopg://") or value.startswith("postgresql+asyncpg://"):
+    if not value.lower().startswith("postgres"):
         return value
-    if value.startswith("postgresql://"):
-        return "postgresql+psycopg://" + value[len("postgresql://") :]
-    if value.startswith("postgres://"):
-        return "postgresql+psycopg://" + value[len("postgres://") :]
-    return value
+
+    parsed = urlparse(value)
+    scheme = parsed.scheme.lower()
+
+    if scheme == "postgres":
+        scheme = "postgresql"
+
+    if scheme == "postgresql":
+        scheme = "postgresql+psycopg"
+
+    if scheme not in {"postgresql+psycopg", "postgresql+asyncpg"}:
+        scheme = "postgresql+psycopg"
+
+    query_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query_params.setdefault("sslmode", "require")
+    query_params.setdefault("target_session_attrs", "read-write")
+    new_query = urlencode(query_params, doseq=True)
+
+    normalized = urlunparse(
+        parsed._replace(
+            scheme=scheme,
+            query=new_query,
+        )
+    )
+    return normalized
 
 
 class Settings(BaseSettings):

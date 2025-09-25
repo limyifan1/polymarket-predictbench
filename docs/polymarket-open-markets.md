@@ -1,141 +1,100 @@
-# Polymarket Predictbench Daily Processing Plan
+# Polymarket PredictBench Daily Pipeline
 
-## 1. Updated Objectives
-- Run a single ingestion + processing pipeline once per day at a predictable UTC time via GitHub Actions.
-- Collect only Polymarket markets that close exactly *N* days from the run date (default `N = 7`) and discard all other markets.
-- Execute a modular data-processing stage that can host multiple experiments without rewriting the ingestion flow.
-- Persist outputs only for markets that completed processing; avoid storing unprocessed/raw markets in the database.
-- Use Supabase (managed Postgres) in production and a local developer database in non-production environments, controlled by configuration.
-- Keep the architecture observable, testable, and easy to extend as new experiments are added.
+This document captures how the daily ingestion + processing pipeline is implemented today and how to extend it safely.
 
-## 2. End-to-End Flow Overview
-1. **Scheduler** (GitHub Actions) triggers the pipeline every day at the configured UTC time, and can also be invoked manually.
-2. **Orchestrator CLI** (new `python -m pipelines.daily_run`) determines the target close date window, pulls the relevant markets, and coordinates downstream stages.
-3. **Ingestion Stage** fetches only markets closing within the target window, normalizes them, and performs lightweight validation.
-4. **Processing Stage** runs a configurable list of experiments against each market, producing structured outputs and metadata.
-5. **Persistence Stage** writes processed markets and experiment results to the configured database inside a single transaction per market; failed markets are skipped and reported.
-6. **Reporting Stage** emits logs/metrics and uploads a JSON summary artifact for GitHub Actions (processed count, failures, runtime).
+## 1. Objectives
+- Run the Polymarket processing pipeline once per day at a predictable UTC time via GitHub Actions, with manual reruns when needed.
+- Collect only markets that close on a configurable future window (defaults to seven days ahead) and skip everything else.
+- Execute a configurable list of experiments for each market; persist outputs only when every experiment succeeds.
+- Keep production writes pointed at Supabase Postgres while letting local development default to SQLite (or any override supplied via `DATABASE_URL`).
+- Record auditable metadata for each run (processed counts, failures, Git SHA) and publish a machine-readable summary artifact for CI consumers.
+
+## 2. End-to-End Flow
+1. **Scheduler** – `.github/workflows/daily-pipeline.yml` triggers at `0 7 * * *` UTC or by manual dispatch.
+2. **Orchestrator** – `python -m pipelines.daily_run` resolves the target close-date window, builds Polymarket API filters, and initializes the database session + run metadata.
+3. **Ingestion** – `PolymarketClient` fetches markets with `closed=false`, `end_date_min`, and `end_date_max` bounds; payloads are normalized via `ingestion.normalize.normalize_market`.
+4. **Experiments** – `load_experiments` instantiates the configured experiment classes; each experiment's `run` method receives the normalized market and a `PipelineContext`.
+5. **Persistence** – successful markets are stored in `processed_*` tables alongside experiment runs/results while `crud.upsert_market` keeps the legacy `markets`/`contracts` tables in sync.
+6. **Reporting** – the run summary (`PipelineSummary`) tracks totals and failure reasons; when `--summary-path` is provided the JSON payload is written to disk and uploaded as a GitHub Actions artifact.
 
 ```
-GitHub Actions (cron/manual)
+GitHub Actions (cron/dispatch)
         |
         v
-pipelines.daily_run (Python CLI)
+pipelines.daily_run (CLI)
         |
         v
- +--------------+    +--------------------+    +-------------------+
- | Ingestion    | -> | Experiment Pipeline | -> | Persistence Layer |
- +--------------+    +--------------------+    +-------------------+
+ +--------------+    +-----------------+    +-------------------+
+ | Ingestion    | -> | Experiments     | -> | Persistence       |
+ +--------------+    +-----------------+    +-------------------+
         |
         v
-   Monitoring & Artifacts (logs, summary JSON)
+   Logs & Summary Artifact
 ```
 
-## 3. Scheduling & Orchestration
-- **Workflow cadence**: run at 07:00 UTC daily. Cron expression: `0 7 * * *`.
-- **GitHub Action workflow**:
-  - Trigger types: `schedule` + `workflow_dispatch` for manual reruns.
-  - Steps: checkout repo, set up Python, install deps (reuse caching), load secrets, run CLI, upload summary artifact, notify on failure.
-  - Secrets required:
-    - `SUPABASE_DB_URL` (pooled Postgres connection string for the daily run).
-    - `SUPABASE_SERVICE_ROLE_KEY` (admin token for migrations and transactional writes).
-    - `POLYMARKET_API_KEY` (only if Polymarket introduces auth; optional for now).
-  - The GitHub Actions workflow lives at `.github/workflows/daily-pipeline.yml`; it errors immediately if `SUPABASE_DB_URL` is missing so production runs never fall back to SQLite. Paste the pooled Postgres **connection string** from Supabase (`Database` → `Connection string` → `psql`), which starts with `postgresql://`; the settings layer rewrites this to `postgresql+psycopg://` automatically so SQLAlchemy uses psycopg3.
-  - Environment variables: `TARGET_CLOSE_WINDOW_DAYS=7`, `PIPELINE_RUN_AT_UTC=07:00`, `ENVIRONMENT=production`, `SUPABASE_PROJECT_REF=<supabase-ref>`.
-  - For manual dispatch, allow overriding `TARGET_CLOSE_WINDOW_DAYS` to backfill other horizons.
-- **Idempotency**: CLI should record a `processing_runs` entry keyed by `run_date` and `window_days`. If a rerun exists, force either an update or skip to prevent double writes (design choice captured in schema section).
+## 3. Scheduling & GitHub Actions
+- **Triggers**: scheduled daily run plus `workflow_dispatch` inputs (`window_days`, `target_date`, `dry_run`). Blank inputs allow the CLI defaults to take effect.
+- **Steps**: checkout repository, install Python 3.11 dependencies from `backend/requirements.txt`, verify `SUPABASE_DB_URL` is present, execute the CLI, and upload `artifacts/pipeline-summary.json` if produced.
+- **Runtime environment**: the job sets `ENVIRONMENT=production` so the settings resolver insists on a Supabase connection. `PYTHONPATH` is pointed at `backend` so imports like `app` resolve correctly.
+- **Secrets**: `SUPABASE_DB_URL` (pooled Postgres string) and `SUPABASE_SERVICE_ROLE_KEY` must be configured in the repository. Authentication to the Polymarket API is still optional; no key is required today. Supply the `postgresql://` DSN from Supabase (“Connection string” → “psql”); the settings layer promotes it to `postgresql+psycopg://` and enforces `sslmode=require` / `target_session_attrs=read-write` automatically so PgBouncer plays nicely with psycopg3.
+- **Overrides**: manual dispatches can change the processing horizon (`window_days`), target date (`target_date`), or toggle `dry_run`. The CLI also accepts `--limit` for ad-hoc debugging; the workflow leaves it unset.
+- **Artifacts**: the pipeline always logs to stdout via Loguru; when `--summary-path` is provided the JSON summary contains `run_id`, `run_date`, `target_date`, `window_days`, and failure details for downstream notifications.
 
-## 4. Ingestion Stage Design
-- **Target window calculation**:
-  - Determine `target_date = (today_utc + window_days)`.
-  - Define `[start, end)` bounds as midnight to midnight UTC of `target_date`.
-  - Pass bounds using Polymarket filters: `end_date_min=start`, `end_date_max=end`.
-- **API interactions**:
-  - Reuse `PolymarketClient` with new helper to set `closed=false`, `end_date_min`, `end_date_max`, and `page_size`.
-  - Add instrumentation logs indicating number of pages requested and rate limiting (sleep if needed).
-- **Normalization & validation**:
-  - Reuse `normalize_market` to map raw payloads into typed objects.
-  - Validate mandatory fields (`id`, `question`, `closeTime`, outcome data). Fail fast if missing or inconsistent.
-- **In-memory staging**:
-  - Accumulate normalized markets in memory (list of dataclasses) instead of persisting.
-  - Optionally emit a staging JSON artifact for debugging (guarded by `--debug-artifacts`).
+## 4. Pipeline CLI Behaviour
+- `pipelines.daily_run` arguments:
+  - `--window-days <int>`: number of days ahead from the run date. Defaults to `Settings.target_close_window_days` (7 unless overridden by `TARGET_CLOSE_WINDOW_DAYS`).
+  - `--target-date YYYY-MM-DD`: explicit date; overrides `--window-days` after validating that the target is not in the past.
+  - `--dry-run`: bypasses all database writes while still counting processed/failed markets.
+  - `--limit <int>`: stop after processing the specified number of markets (useful for local smoke tests).
+  - `--summary-path <path>`: write a formatted JSON summary. The helper creates parent directories automatically.
+- The CLI resolves the start/end bounds for the target day in UTC (`00:00:00` inclusive to the next day's midnight exclusive) and injects them into the Polymarket filters.
+- Experiments are loaded before ingestion starts. If no experiments are configured the CLI aborts early so we never persist half-baked runs.
+- When running with writes enabled, the CLI records:
+  - A `processing_runs` row with run metadata and the Git SHA (if supplied via `GITHUB_SHA`).
+  - An `experiment_runs` record for each registered experiment with status transitions (`running` → `completed`/`failed`).
+  - For each processed market: entries in `processed_markets`, `processed_contracts`, and associated `experiment_results` rows.
+  - Failures captured via `processing_failures` with a `retriable` flag.
+- Dry-run mode still loads experiments and executes them; it simply skips persistence and leaves the database untouched.
 
-## 5. Processing Pipeline Architecture
-- **Pipeline entry point**: `pipelines.daily_run` constructs a `PipelineContext` (contains run metadata, db handle, config) and iterates through markets.
-- **Experiment registry**:
-  - Define `Experiment` protocol with `name`, `version`, `requires`, and `run(market, context)` returning `ExperimentResult` (structured dataclass + optional artifacts).
-  - Implement registry loader driven by configuration (list of experiment module paths in settings).
-  - Support simple dependency ordering via `requires` list.
-- **Execution semantics**:
-  - For each market, run experiments sequentially (initial baseline). Future improvement: concurrency with async workers.
-  - If any experiment raises a non-recoverable exception, mark the market as failed and exclude from persistence while logging the failure reason.
-  - Allow experiments to short-circuit with `ExperimentSkip` to opt out gracefully.
-- **Default experiment**:
-  - Provide a placeholder `BaselineSnapshotExperiment` that records market metadata and acts as a template.
-  - Additional experiments (LLM prompts, pricing models) can be appended by registering new classes.
-- **Result packaging**:
-  - Aggregate experiment outputs into a `ProcessedMarketPayload` (includes market metadata, experiment results array, run-level metadata, optional derived metrics).
-  - Include raw market snapshot JSON for traceability, but only inside the processed record that passes all experiments.
+## 5. Experiments & Extensibility
+- The `Experiment` protocol (see `backend/pipelines/experiments/base.py`) defines `name`, `version`, `description`, and a synchronous `run(market, context)` method returning an `ExperimentResult` payload, optional score, and artifact URI.
+- `backend/pipelines/registry.py` reads dotted paths from `Settings.processing_experiments`, imports each module, instantiates the class, and logs any load failures.
+- Experiments execute sequentially per market. `ExperimentSkip` lets an experiment opt out gracefully; `ExperimentExecutionError` (or any unexpected exception) marks the market as failed and records the error message.
+- The default `BaselineSnapshotExperiment` (`backend/pipelines/experiments/baseline.py`) captures the normalized market plus contract snapshots so downstream systems can audit the exact data that was evaluated.
+- To add a new experiment, implement the protocol, expose it via `module:ClassName`, and append the import string to `PROCESSING_EXPERIMENTS` in `.env` or the GitHub Actions environment.
 
-## 6. Persistence Strategy
-- **Environments**:
-  - *Production*: Supabase managed Postgres. Primary connection uses the pooled `SUPABASE_DB_URL` secret; migrations and admin tasks use the `SUPABASE_SERVICE_ROLE_KEY`.
-  - *Development*: Dockerized Postgres defined in `docker-compose.dev.yml` or local container. Default `dev` `.env` points to `postgresql://predictbench:predictbench@localhost:5432/predictbench`.
-- **Write semantics**:
-  - Wrap each market save inside a DB transaction to guarantee atomicity between market metadata and experiment outputs.
-  - Only commit if every mandatory experiment succeeded; otherwise roll back and mark as failure in `processing_failures` table.
-  - Upsert behavior: if a market already exists for the same `run_id`, update the record (keep latest experiment versions) to support reruns.
-- **Schema (new/updated tables)**:
-  - `processing_runs`: `run_id` (UUID), `run_date`, `window_days`, `target_date`, `started_at`, `finished_at`, `status`, `total_markets`, `processed_markets`, `failed_markets`, `git_sha`.
-  - `processed_markets`: `processed_market_id` (UUID), `run_id` (FK), `market_id`, `market_slug`, `question`, `close_time`, `raw_snapshot` (JSONB), `processed_at`.
-  - `processed_contracts`: `processed_contract_id`, `processed_market_id` (FK), `contract_id`, `name`, `price`, `metadata` (JSONB).
-  - `experiments`: `experiment_id`, `name`, `version`, `description`, `is_active`.
-  - `experiment_runs`: `experiment_run_id`, `run_id`, `experiment_id`, `status`, `started_at`, `finished_at`, `error_message`.
-  - `experiment_results`: `experiment_result_id`, `experiment_run_id`, `processed_market_id`, `payload` (JSONB), `score` (optional numeric), `artifact_uri`.
-  - `processing_failures`: `failure_id`, `run_id`, `market_id`, `reason`, `logged_at`, `retriable`.
-- **Access patterns**:
-  - Index `processed_markets.run_id` and `processed_markets.close_time` for reporting.
-  - Use materialized views or SQL queries to surface latest experiments per market for the frontend API.
+## 6. Persistence Model
+- `session_scope()` (in `backend/ingestion/service.py`) manages a SQLAlchemy session with commit/rollback semantics. The daily pipeline holds one session for the full run so partially processed markets stay isolated until the run completes.
+- Key tables touched by the pipeline (`backend/app/models.py`):
+  - `processing_runs`: top-level run metadata (`run_id`, `run_date`, `window_days`, `target_date`, counts, status, Git SHA, environment).
+  - `processed_markets`: run-scoped market snapshots (`processed_market_id`, `run_id`, `market_id`, `question`, `close_time`, `raw_snapshot`). A unique constraint on (`run_id`, `market_id`) prevents duplicates inside a run.
+  - `processed_contracts`: contracts nested under a processed market with stored attributes (`price`, `attributes`).
+  - `experiments` / `experiment_runs` / `experiment_results`: definitions, per-run execution metadata, and structured outputs respectively.
+  - `processing_failures`: reasons and retriability flags for markets that did not persist.
+  - `markets` / `contracts`: the legacy canonical tables kept in sync via `crud.upsert_market`.
+- SQLite is the default (`sqlite:///../data/predictbench.db`), but `ENVIRONMENT=production` forces `SUPABASE_DB_URL` to be present so GitHub Actions never writes to SQLite by mistake.
 
-### 6.1 Supabase Integration Notes
-- **Project layout**: create `prod` and `staging` Supabase projects or branches; align environments with GitHub Action contexts.
-- **Connection pooling**: rely on Supabase's pooled connection string for the GitHub Action run to avoid exceeding connection limits; expose pool size via `DB_POOL_MAX_SIZE`.
-- **Secrets management**: store `SUPABASE_DB_URL` (pooled), `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_PROJECT_REF` in GitHub Actions. Only the backend has access to the service-role key.
-- **Auth & RLS**: keep row-level security disabled for ingestion tables; future frontend access should go through a service API so the Next.js app never uses service-role credentials.
-- **Monitoring**: enable Supabase's database observability (logs, query stats) and configure automated daily backups with point-in-time recovery.
-- **Local dev parity**: provide a `seed_supabase.sql` generated from migrations so developers can mirror schema locally when needed.
+## 7. Failure Handling & Reporting
+- **Normalization errors**: any exception raised while parsing a market increments `failed_markets`, appends a `normalization_failed` entry to the summary, and records a retriable failure when not in dry-run mode.
+- **Experiment failures**: unexpected exceptions from an experiment mark the market as failed, log the stack trace, and capture a `experiment_failed` record. Experiment skips simply continue to the next experiment.
+- **Empty result guard**: if every experiment completes but no result payloads are returned, the pipeline treats the market as failed (`no_experiment_results`) and records a non-retriable failure.
+- **Summary artifact**: the JSON structure produced by `_write_summary` includes `total_markets`, `processed_markets`, `failed_markets`, and an array of `{market_id, reason}` pairs for fast triage. GitHub Actions uploads the artifact so chatops/notifications can re-use it.
+- **Logging**: Loguru logs include the run ID in contextual messages (e.g., `Starting pipeline run ...`, failure traces) to make GH Actions output searchable.
 
-## 7. Configuration & Secrets
-- Centralize settings in `app/core/config.py`:
-  - `PIPELINE_RUN_TIME_UTC`, `TARGET_CLOSE_WINDOW_DAYS`, `PROCESSING_EXPERIMENTS` (comma-separated module path list), `DATABASE_URL`, `ENVIRONMENT`.
-  - Provide `.env.example` entries for local usage; instruct developers to copy into `backend/.env`.
-- Extend `get_settings()` to read GitHub Actions secrets (via environment variables) with no code changes in CI.
-- Map production `DATABASE_URL` to the Supabase pooled connection string (`SUPABASE_DB_URL`) injected by GitHub Actions; expose the service-role key only to backend jobs.
-- Backend settings now enforce that `SUPABASE_DB_URL` is present whenever `ENVIRONMENT=production`, preventing accidental writes to SQLite in CI/CD.
-- Allow overriding `TARGET_CLOSE_WINDOW_DAYS` at runtime via CLI flag (`--window-days`) for backfills.
+## 8. Configuration & Secrets
+- Primary settings live in `backend/app/core/config.py` and derive from environment variables:
+  - `DEBUG`, `ENVIRONMENT`, `DATABASE_URL`, `SUPABASE_DB_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+  - Polymarket client knobs: `POLYMARKET_BASE_URL`, `POLYMARKET_MARKETS_PATH`, `INGESTION_PAGE_SIZE`, and arbitrary `INGESTION_FILTERS` (parsed as JSON).
+  - Pipeline settings: `TARGET_CLOSE_WINDOW_DAYS`, `PIPELINE_RUN_TIME_UTC`, and `PROCESSING_EXPERIMENTS`.
+- `ENVIRONMENT=production` enforces that `SUPABASE_DB_URL` is supplied and automatically upgrades pooled connection strings to the `postgresql+psycopg://` SQLAlchemy dialect.
+- `.env.example` documents the most common overrides; `backend/.env` is used for local development and checked into `.gitignore`.
+- For GitHub Actions, set environment variables in the workflow or repository secrets; no code changes are required because `pydantic-settings` reads from the process environment.
 
-## 8. Observability & Quality Gates
-- **Logging**: Structured JSON logs (Loguru formatter) with `run_id`, `process_stage`, `market_id` to simplify GH Actions log filtering.
-- **Metrics**: Emit Prometheus-friendly counters/histograms when running outside GH Actions. Inside the action, include summary JSON (counts, durations) as artifact.
-- **Alerting**: Configure GitHub Actions to notify via Slack/Webhook on workflow failure. Optional: send summary to Slack using repository secret.
-- **Testing**:
-  - Unit tests for window calculation logic, experiment registry, and persistence transaction behavior.
-  - Integration test that spins up test Postgres (via pytest fixture) and runs pipeline against fixture API responses.
-  - Contract test for Polymarket client using recorded responses (VCR.py) to guard against API changes.
-  - Dry-run mode (`--dry-run`) for safe experimentation; prints would-be writes without touching the DB.
-
-## 9. Implementation Milestones
-1. **Migrate configuration**: Introduce new settings keys, document environment overrides, and stub CLI entrypoint.
-2. **Build pipeline CLI**: Implement window calculation, Polymarket fetch with new filters, and dry-run support.
-3. **Design persistence layer**: Create migrations for new tables, transactional save helpers, and failure logging.
-4. **Implement experiment framework**: Add registry, base experiment protocol, and placeholder experiment.
-5. **Integrate pipeline stages**: Wire ingestion, experiments, and persistence in the CLI; add summary reporting.
-6. **Author GitHub Actions workflow**: Schedule daily run, parameterize secrets, upload artifacts, and add notifications.
-7. **Add testing & documentation**: Cover unit/integration tests, update README, and document local dev setup.
-8. **Pilot run**: Execute workflow manually against staging database, review artifacts/logs, and adjust instrumentation before enabling daily cron.
-
-## 10. Open Questions & Follow-Up
-- Validate Supabase project tier requirements (e.g., pro vs. team) and whether read replicas or edge functions are needed.
-- Decide on retention policy for `raw_snapshot` JSON (possible pruning after X days to reduce storage).
-- Determine whether processed data should be pushed to downstream analytics buckets (S3, BigQuery) in future iterations.
-- Clarify experiment SLAs (are partial failures acceptable if core baseline passes?).
+## 9. Testing & Future Enhancements
+- **Suggested tests**: window calculation helpers, experiment registry loading, CRUD persistence flows (possibly with a temporary Postgres container), and Polymarket client contract tests using recorded fixtures.
+- **Operational improvements** to consider next:
+  1. Wire Slack/webhook notifications that consume the summary artifact.
+  2. Add structured logging or metrics exporters when running outside GitHub Actions.
+  3. Introduce retention or archiving policies for large `raw_snapshot` payloads.
+  4. Explore concurrency or batching for experiments once multiple heavy models are introduced.
+- Track these enhancements separately so this document stays a source of truth for the implementation that ships today.

@@ -52,13 +52,15 @@ uv run python -m pipelines.daily_run                       # full run, writes to
 uv run python -m pipelines.daily_run --window-days 3       # change close-date horizon
 uv run python -m pipelines.daily_run --target-date 2025-03-01  # explicit processing window
 uv run python -m pipelines.daily_run --summary-path ../summary.json
+uv run python -m pipelines.daily_run --limit 5 --dry-run   # only inspect the first 5 markets
 ```
 
-- Daily GitHub Actions should set `TARGET_CLOSE_WINDOW_DAYS` (defaults to 7) and supply Supabase credentials via `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
+- Daily GitHub Actions can override `TARGET_CLOSE_WINDOW_DAYS` if needed (otherwise the settings default of 7 is used) and must supply Supabase credentials via `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
 - `--dry-run` is useful locally to confirm API reachability without mutating the database.
 - `--summary-path` writes a JSON artifact (`processed`, `failed`, timing, etc.) to help CI notifications.
 - When the pipeline runs against production, `ENVIRONMENT=production` now requires `SUPABASE_DB_URL`; the app will error early if the secret is missing so we never fall back to SQLite while deploying.
-- The repository ships with `.github/workflows/daily-pipeline.yml`, which runs the pipeline every day at 07:00 UTC (and on manual dispatch). Configure repository secrets `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY` so GitHub Actions can write to Supabase. Use the pooled Postgres **connection string** from Supabase (`Database` → `Connection string` → `psql`) – it should start with `postgresql://`; the app will automatically upgrade it to `postgresql+psycopg://` so SQLAlchemy uses the psycopg3 driver. Manual runs can override `window_days`, `target_date`, or toggle a dry-run directly from the workflow UI.
+- The repository ships with `.github/workflows/daily-pipeline.yml`, which runs the pipeline every day at 07:00 UTC (and on manual dispatch). Configure repository secrets `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY` so GitHub Actions can write to Supabase. Use the pooled Postgres **connection string** from Supabase (`Database` → `Connection string` → `psql`) – it should start with `postgresql://`; the app automatically upgrades it to `postgresql+psycopg://` and injects `sslmode=require`/`target_session_attrs=read-write` so SQLAlchemy negotiates correctly with Supabase. Manual runs can override `window_days`, `target_date`, or toggle a dry-run directly from the workflow UI.
+- The pipeline aborts if no experiments are registered; configure `processing_experiments` in `backend/app/core/config.py` (or `PROCESSING_EXPERIMENTS` in `.env`) when adding new experiment modules.
 
 #### How Polymarket events are retrieved
 - The pipeline wraps `https://gamma-api.polymarket.com/markets` via `ingestion.client.PolymarketClient`, which serializes query parameters and paginates with the configured `ingestion_page_size` (default 200).
