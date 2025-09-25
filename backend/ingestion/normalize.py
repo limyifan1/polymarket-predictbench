@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from dateutil import parser as date_parser
@@ -88,13 +89,46 @@ def _parse_int(value: Any) -> int | None:
         return int(round(float_val))
 
 
+_WEI_SCALE = Decimal("1e18")
+_WEI_THRESHOLD = Decimal("1e12")
+_INT32_MAX = 2_147_483_647
+
+
 def _normalize_fee_bps(raw_fee: Any) -> int | None:
-    fee = _parse_float(raw_fee)
-    if fee is None:
+    if raw_fee is None:
         return None
-    if fee > 1:
-        return int(round(fee * 100))
-    return int(round(fee * 10_000))
+
+    try:
+        # Preserve precision by routing through Decimal and string casting.
+        decimal_fee = Decimal(str(raw_fee))
+    except (InvalidOperation, ValueError):
+        return None
+
+    if decimal_fee.is_nan():  # guard against NaN inputs
+        return None
+
+    if decimal_fee == 0:
+        return 0
+
+    # Polymarket occasionally returns the fee as a fixed-point integer scaled by 1e18.
+    if decimal_fee >= _WEI_THRESHOLD:
+        decimal_fee = decimal_fee / _WEI_SCALE
+
+    if decimal_fee > Decimal("100"):
+        normalized = decimal_fee
+    elif decimal_fee > Decimal("1"):
+        normalized = decimal_fee * Decimal("100")
+    else:
+        normalized = decimal_fee * Decimal("10000")
+
+    # Clamp to zero for negative or extremely small values.
+    if normalized <= 0:
+        return 0
+
+    normalized_int = int(normalized.to_integral_value(rounding=ROUND_HALF_UP))
+    if normalized_int > _INT32_MAX:
+        return _INT32_MAX
+    return normalized_int
 
 
 def normalize_contract(raw_contract: dict[str, Any], market_id: str) -> crud.NormalizedContract:
