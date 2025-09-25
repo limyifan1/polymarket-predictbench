@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import date, datetime, timezone
 from enum import Enum
 
@@ -32,6 +34,7 @@ class Market(Base):
     __tablename__ = "markets"
 
     market_id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str | None] = mapped_column(String, ForeignKey("events.event_id"), nullable=True)
     slug: Mapped[str | None] = mapped_column(String, nullable=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -52,6 +55,7 @@ class Market(Base):
     contracts: Mapped[list["Contract"]] = relationship(
         "Contract", back_populates="market", cascade="all, delete-orphan"
     )
+    event: Mapped[Event | None] = relationship("Event", back_populates="markets")
 
 
 class Contract(Base):
@@ -67,6 +71,25 @@ class Contract(Base):
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     market: Mapped[Market] = relationship("Market", back_populates="contracts")
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    start_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    icon_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    series_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    series_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    markets: Mapped[list[Market]] = relationship(
+        "Market", back_populates="event", cascade="all, delete-orphan"
+    )
 
 
 class ProcessingRun(Base):
@@ -94,6 +117,33 @@ class ProcessingRun(Base):
     failures: Mapped[list["ProcessingFailure"]] = relationship(
         "ProcessingFailure", back_populates="processing_run", cascade="all, delete-orphan"
     )
+    events: Mapped[list["ProcessedEvent"]] = relationship(
+        "ProcessedEvent", back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class ProcessedEvent(Base):
+    __tablename__ = "processed_events"
+
+    processed_event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("processing_runs.run_id"), nullable=False)
+    event_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    event_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    run: Mapped[ProcessingRun] = relationship("ProcessingRun", back_populates="events")
+    markets: Mapped[list[ProcessedMarket]] = relationship(
+        "ProcessedMarket", back_populates="processed_event", cascade="all, delete-orphan"
+    )
+    experiment_results: Mapped[list["ExperimentResultRecord"]] = relationship(
+        "ExperimentResultRecord", back_populates="processed_event", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "event_id", name="uq_processed_event_scope"),
+    )
 
 
 class ProcessedMarket(Base):
@@ -101,6 +151,9 @@ class ProcessedMarket(Base):
 
     processed_market_id: Mapped[str] = mapped_column(String, primary_key=True)
     run_id: Mapped[str] = mapped_column(String, ForeignKey("processing_runs.run_id"), nullable=False)
+    processed_event_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("processed_events.processed_event_id"), nullable=True
+    )
     market_id: Mapped[str] = mapped_column(String, nullable=False)
     market_slug: Mapped[str | None] = mapped_column(String, nullable=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
@@ -109,6 +162,9 @@ class ProcessedMarket(Base):
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     run: Mapped[ProcessingRun] = relationship("ProcessingRun", back_populates="markets")
+    processed_event: Mapped[ProcessedEvent | None] = relationship(
+        "ProcessedEvent", back_populates="markets"
+    )
     contracts: Mapped[list["ProcessedContract"]] = relationship(
         "ProcessedContract", back_populates="processed_market", cascade="all, delete-orphan"
     )
@@ -196,8 +252,11 @@ class ExperimentResultRecord(Base):
     experiment_run_id: Mapped[str] = mapped_column(
         String, ForeignKey("experiment_runs.experiment_run_id"), nullable=False
     )
-    processed_market_id: Mapped[str] = mapped_column(
-        String, ForeignKey("processed_markets.processed_market_id"), nullable=False
+    processed_market_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("processed_markets.processed_market_id"), nullable=True
+    )
+    processed_event_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("processed_events.processed_event_id"), nullable=True
     )
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     score: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
@@ -207,13 +266,17 @@ class ExperimentResultRecord(Base):
     experiment_run: Mapped[ExperimentRunRecord] = relationship(
         "ExperimentRunRecord", back_populates="results"
     )
-    processed_market: Mapped[ProcessedMarket] = relationship(
+    processed_market: Mapped[ProcessedMarket | None] = relationship(
         "ProcessedMarket", back_populates="experiment_results"
+    )
+    processed_event: Mapped[ProcessedEvent | None] = relationship(
+        "ProcessedEvent", back_populates="experiment_results"
     )
 
     __table_args__ = (
         UniqueConstraint(
             "experiment_run_id",
+            "processed_event_id",
             "processed_market_id",
             name="uq_experiment_result_scope",
         ),

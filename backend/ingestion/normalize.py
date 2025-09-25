@@ -59,6 +59,36 @@ def _build_contracts(raw_market: dict[str, Any], market_id: str) -> list[dict[st
     return built_contracts
 
 
+def _build_event(raw_market: dict[str, Any]) -> crud.NormalizedEvent | None:
+    events = _as_list(raw_market.get("events"))
+    if not events:
+        return None
+
+    primary = events[0]
+    if not isinstance(primary, dict):
+        return None
+
+    raw_event_id = primary.get("id") or primary.get("eventId") or primary.get("_id")
+    if not raw_event_id:
+        return None
+
+    series_entries = _as_list(primary.get("series"))
+    series_entry = series_entries[0] if series_entries and isinstance(series_entries[0], dict) else None
+
+    return crud.NormalizedEvent(
+        event_id=str(raw_event_id),
+        slug=primary.get("slug"),
+        title=primary.get("title") or primary.get("name"),
+        description=primary.get("description"),
+        start_time=_parse_datetime(primary.get("startDate") or primary.get("start_time")),
+        end_time=_parse_datetime(primary.get("endDate") or primary.get("end_time")),
+        icon_url=primary.get("icon") or primary.get("image"),
+        series_slug=series_entry.get("slug") if series_entry else None,
+        series_title=series_entry.get("title") if series_entry else None,
+        raw_data=primary,
+    )
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -169,6 +199,7 @@ def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
     contracts = [normalize_contract(contract, market_id) for contract in contracts_raw]
 
     close_time = _parse_datetime(raw_market.get("closeTime") or raw_market.get("endDate"))
+    event = _build_event(raw_market)
 
     return crud.NormalizedMarket(
         market_id=market_id,
@@ -184,6 +215,7 @@ def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
         status=str(raw_market.get("status") or "open").lower(),
         description=raw_market.get("description"),
         icon_url=raw_market.get("icon") or raw_market.get("image"),
+        event=event,
         contracts=contracts,
         raw_data=raw_market,
     )

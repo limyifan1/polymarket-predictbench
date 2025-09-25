@@ -52,8 +52,23 @@ class MarketBase(BaseModel):
         return float(value)
 
 
+class Event(BaseModel):
+    event_id: str
+    slug: str | None = None
+    title: str | None = None
+    description: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    icon_url: str | None = None
+    series_slug: str | None = None
+    series_title: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class Market(MarketBase):
     contracts: list[Contract] = Field(default_factory=list)
+    event: Event | None = None
 
     model_config = {"from_attributes": True}
 
@@ -61,3 +76,13 @@ class Market(MarketBase):
 class MarketList(BaseModel):
     total: int
     items: list[Market]
+
+
+class EventWithMarkets(Event):
+    markets: list[Market] = Field(default_factory=list)
+    market_count: int
+
+
+class EventList(BaseModel):
+    total: int
+    items: list[EventWithMarkets]

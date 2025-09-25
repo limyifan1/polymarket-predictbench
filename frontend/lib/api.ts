@@ -1,4 +1,4 @@
-import type { MarketListResponse } from "@/types/market";
+import type { EventListResponse, MarketListResponse } from "@/types/market";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -79,4 +79,17 @@ export async function fetchMarkets(filters: MarketFilters): Promise<MarketListRe
   }
 
   return response.json() as Promise<MarketListResponse>;
+}
+
+export async function fetchEvents(filters: MarketFilters): Promise<EventListResponse> {
+  const query = buildQuery(filters);
+  const response = await fetch(`${API_BASE_URL}/events?${query}`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load events: ${response.status}`);
+  }
+
+  return response.json() as Promise<EventListResponse>;
 }

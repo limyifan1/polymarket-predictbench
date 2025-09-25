@@ -17,8 +17,10 @@ from app.db import init_db
 from app.crud import (
     ExperimentResultInput,
     ExperimentRunInput,
+    NormalizedEvent,
     NormalizedMarket,
     ProcessedContractInput,
+    ProcessedEventInput,
     ProcessedMarketInput,
 )
 from ingestion.client import PolymarketClient
@@ -26,7 +28,13 @@ from ingestion.normalize import normalize_market
 from ingestion.service import session_scope
 
 from .context import PipelineContext
-from .experiments.base import Experiment, ExperimentExecutionError, ExperimentResult, ExperimentSkip
+from .experiments.base import (
+    EventMarketGroup,
+    Experiment,
+    ExperimentExecutionError,
+    ExperimentResult,
+    ExperimentSkip,
+)
 from .registry import load_experiments
 
 
@@ -62,6 +70,12 @@ class PipelineSummary:
             "failed_markets": self.failed_markets,
             "failures": self.failures,
         }
+
+
+@dataclass(slots=True)
+class EventBucket:
+    event: NormalizedEvent | None
+    markets: list[NormalizedMarket] = field(default_factory=list)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -159,19 +173,20 @@ def _convert_contracts(market: NormalizedMarket) -> list[ProcessedContractInput]
 
 def _execute_experiments(
     *,
-    market: NormalizedMarket,
+    group: EventMarketGroup,
     pipeline_context: PipelineContext,
     experiment_runs: list[ExperimentRunMeta],
 ) -> list[ExperimentResult]:
     results: list[ExperimentResult] = []
     for meta in experiment_runs:
         try:
-            result = meta.experiment.run(market, pipeline_context)
+            result = meta.experiment.run(group, pipeline_context)
         except ExperimentSkip as exc:
             logger.info(
-                "Experiment {} skipped market {}: {}",
+                "Experiment {} skipped group (event {}). {} markets skipped.",
                 meta.experiment.name,
-                market.market_id,
+                group.event.event_id if group.event else "none",
+                len(group.markets),
                 exc,
             )
             continue
@@ -179,9 +194,9 @@ def _execute_experiments(
             meta.status = "failed"
             meta.error_messages.append(str(exc))
             logger.error(
-                "Experiment {} failed for market {}: {}",
+                "Experiment {} failed for event {}: {}",
                 meta.experiment.name,
-                market.market_id,
+                group.event.event_id if group.event else "none",
                 exc,
             )
             raise
@@ -189,9 +204,9 @@ def _execute_experiments(
             meta.status = "failed"
             meta.error_messages.append(str(exc))
             logger.exception(
-                "Unexpected error in experiment {} for market {}",
+                "Unexpected error in experiment {} for event {}",
                 meta.experiment.name,
-                market.market_id,
+                group.event.event_id if group.event else "none",
             )
             raise ExperimentExecutionError(str(exc)) from exc
         else:
@@ -288,6 +303,9 @@ def main() -> None:
         client = PolymarketClient(page_size=settings.ingestion_page_size, filters=filters)
 
         try:
+            grouped_markets: dict[str, EventBucket] = {}
+            event_order: list[str] = []
+
             for index, raw_market in enumerate(client.iter_markets(), start=1):
                 if args.limit and index > args.limit:
                     logger.info("Limit reached ({}); stopping early", args.limit)
@@ -320,76 +338,120 @@ def main() -> None:
                         )
                     continue
 
+                event = normalized.event
+                if event and event.event_id:
+                    group_key = event.event_id
+                else:
+                    group_key = f"market:{normalized.market_id}"
+
+                bucket = grouped_markets.get(group_key)
+                if bucket is None:
+                    bucket = EventBucket(event=event)
+                    grouped_markets[group_key] = bucket
+                    event_order.append(group_key)
+                elif bucket.event is None and event is not None:
+                    bucket.event = event
+
+                bucket.markets.append(normalized)
+
+            for group_key in event_order:
+                bucket = grouped_markets[group_key]
+                markets = bucket.markets
+                event_payload = bucket.event
+                group = EventMarketGroup(event=event_payload, markets=markets)
+
                 try:
                     experiment_results = _execute_experiments(
-                        market=normalized,
+                        group=group,
                         pipeline_context=pipeline_context,
                         experiment_runs=experiment_metas,
                     )
                 except ExperimentExecutionError as exc:
-                    summary.failed_markets += 1
-                    failure_reason = f"experiment_failed: {exc}"
-                    summary.failures.append(
-                        {
-                            "market_id": normalized.market_id,
-                            "reason": failure_reason,
-                        }
-                    )
-                    if not args.dry_run:
-                        crud.record_processing_failure(
-                            session,
-                            run_id=run_id,
-                            market_id=normalized.market_id,
-                            reason="experiment_failed",
-                            retriable=True,
-                            details={"message": str(exc)},
+                    for market in markets:
+                        summary.failed_markets += 1
+                        failure_reason = f"experiment_failed: {exc}"
+                        summary.failures.append(
+                            {
+                                "market_id": market.market_id,
+                                "reason": failure_reason,
+                            }
                         )
+                        if not args.dry_run:
+                            crud.record_processing_failure(
+                                session,
+                                run_id=run_id,
+                                market_id=market.market_id,
+                                reason="experiment_failed",
+                                retriable=True,
+                                details={"message": str(exc)},
+                            )
                     continue
 
                 if not experiment_results:
-                    summary.failed_markets += 1
-                    summary.failures.append(
-                        {
-                            "market_id": normalized.market_id,
-                            "reason": "no_experiment_results",
-                        }
-                    )
-                    logger.warning(
-                        "No experiment results returned for market {}; skipping persistence",
-                        normalized.market_id,
-                    )
-                    if not args.dry_run:
-                        crud.record_processing_failure(
-                            session,
-                            run_id=run_id,
-                            market_id=normalized.market_id,
-                            reason="no_experiment_results",
-                            retriable=False,
-                            details=None,
+                    for market in markets:
+                        summary.failed_markets += 1
+                        summary.failures.append(
+                            {
+                                "market_id": market.market_id,
+                                "reason": "no_experiment_results",
+                            }
                         )
+                        logger.warning(
+                            "No experiment results returned for market {}; skipping persistence",
+                            market.market_id,
+                        )
+                        if not args.dry_run:
+                            crud.record_processing_failure(
+                                session,
+                                run_id=run_id,
+                                market_id=market.market_id,
+                                reason="no_experiment_results",
+                                retriable=False,
+                                details=None,
+                            )
                     continue
 
-                summary.processed_markets += 1
+                summary.processed_markets += len(markets)
 
                 if args.dry_run:
                     continue
 
-                processed_market_id = str(uuid4())
-                processed_market = crud.record_processed_market(
+                processed_event_id = str(uuid4())
+                processed_event = crud.record_processed_event(
                     session,
-                    ProcessedMarketInput(
-                        processed_market_id=processed_market_id,
+                    ProcessedEventInput(
+                        processed_event_id=processed_event_id,
                         run_id=run_id,
-                        market_id=normalized.market_id,
-                        market_slug=normalized.slug,
-                        question=normalized.question,
-                        close_time=normalized.close_time,
-                        raw_snapshot=normalized.raw_data,
-                        contracts=_convert_contracts(normalized),
+                        event_id=event_payload.event_id if event_payload else None,
+                        event_slug=event_payload.slug if event_payload else None,
+                        event_title=event_payload.title if event_payload else None,
+                        raw_snapshot=event_payload.raw_data if event_payload else None,
                     ),
                 )
 
-                crud.upsert_market(session, normalized)
+                processed_market_ids: list[str] = []
+
+                for market in markets:
+                    processed_market_id = str(uuid4())
+                    processed_market = crud.record_processed_market(
+                        session,
+                        ProcessedMarketInput(
+                            processed_market_id=processed_market_id,
+                            run_id=run_id,
+                            market_id=market.market_id,
+                            market_slug=market.slug,
+                            question=market.question,
+                            close_time=market.close_time,
+                            raw_snapshot=market.raw_data,
+                            processed_event_id=processed_event.processed_event_id,
+                            contracts=_convert_contracts(market),
+                        ),
+                    )
+                    processed_market_ids.append(processed_market.processed_market_id)
+
+                    crud.upsert_market(session, market)
+
+                representative_market_id = processed_market_ids[0] if processed_market_ids else None
 
                 for result in experiment_results:
                     meta = experiment_meta_index.get((result.name, result.version))
@@ -404,7 +466,8 @@ def main() -> None:
                         session,
                         ExperimentResultInput(
                             experiment_run_id=meta.run_identifier,
-                            processed_market_id=processed_market.processed_market_id,
+                            processed_market_id=representative_market_id,
+                            processed_event_id=processed_event.processed_event_id,
                             payload=result.payload,
                             score=result.score,
                             artifact_uri=result.artifact_uri,

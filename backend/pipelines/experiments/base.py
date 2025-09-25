@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.crud import NormalizedMarket
+from app.crud import NormalizedEvent, NormalizedMarket
 
 from ..context import PipelineContext
 
@@ -25,6 +25,12 @@ class ExperimentResult:
     artifact_uri: str | None = None
 
 
+@dataclass(slots=True)
+class EventMarketGroup:
+    event: NormalizedEvent | None
+    markets: list[NormalizedMarket]
+
+
 class Experiment(Protocol):
     """Interface that all experiments must implement."""
 
@@ -32,6 +38,6 @@ class Experiment(Protocol):
     version: str
     description: str | None
 
-    def run(self, market: NormalizedMarket, context: PipelineContext) -> ExperimentResult:
-        """Execute experiment logic for a single market."""
+    def run(self, group: EventMarketGroup, context: PipelineContext) -> ExperimentResult:
+        """Execute experiment logic for a group of markets scoped to an event."""
         raise NotImplementedError

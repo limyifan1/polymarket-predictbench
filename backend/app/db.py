@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -46,6 +46,21 @@ engine, SessionLocal = _build_db_components(settings.resolved_database_url)
 Base = declarative_base()
 
 
+def _ensure_column(engine, table: str, column: str, definition: str) -> None:
+    inspector = inspect(engine)
+    columns = {col["name"] for col in inspector.get_columns(table)}
+    if column in columns:
+        return
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+
+
+def _apply_schema_updates() -> None:
+    _ensure_column(engine, "markets", "event_id", "VARCHAR")
+    _ensure_column(engine, "processed_markets", "processed_event_id", "VARCHAR")
+    _ensure_column(engine, "experiment_results", "processed_event_id", "VARCHAR")
+
+
 def get_db() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
@@ -58,3 +73,4 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _apply_schema_updates()

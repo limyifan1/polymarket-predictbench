@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from .models import (
     Contract,
+    Event,
     ExperimentDefinition,
     ExperimentResultRecord,
     ExperimentRunRecord,
     Market,
+    ProcessedEvent,
     ProcessedContract,
     ProcessedMarket,
     ProcessingFailure,
@@ -33,6 +35,20 @@ class NormalizedContract:
 
 
 @dataclass(slots=True)
+class NormalizedEvent:
+    event_id: str
+    slug: str | None
+    title: str | None
+    description: str | None
+    start_time: datetime | None
+    end_time: datetime | None
+    icon_url: str | None
+    series_slug: str | None
+    series_title: str | None
+    raw_data: dict | None
+
+
+@dataclass(slots=True)
 class NormalizedMarket:
     market_id: str
     slug: str | None
@@ -47,15 +63,23 @@ class NormalizedMarket:
     status: str
     description: str | None
     icon_url: str | None
+    event: NormalizedEvent | None
     contracts: list[NormalizedContract]
     raw_data: dict | None
 
 
 def upsert_market(session: Session, market: NormalizedMarket) -> None:
     existing = session.get(Market, market.market_id)
+    is_new = False
     if existing is None:
         existing = Market(market_id=market.market_id)
-        session.add(existing)
+        is_new = True
+
+    if market.event and market.event.event_id:
+        event_record = upsert_event(session, market.event)
+        existing.event = event_record
+    else:
+        existing.event = None
 
     existing.slug = market.slug
     existing.question = market.question
@@ -89,6 +113,27 @@ def upsert_market(session: Session, market: NormalizedMarket) -> None:
     for orphan_contract in existing_contracts.values():
         session.delete(orphan_contract)
 
+    if is_new:
+        session.add(existing)
+
+
+def upsert_event(session: Session, event: NormalizedEvent) -> Event:
+    existing = session.get(Event, event.event_id)
+    if existing is None:
+        existing = Event(event_id=event.event_id)
+        session.add(existing)
+
+    existing.slug = event.slug
+    existing.title = event.title
+    existing.description = event.description
+    existing.start_time = event.start_time
+    existing.end_time = event.end_time
+    existing.icon_url = event.icon_url
+    existing.series_slug = event.series_slug
+    existing.series_title = event.series_title
+    existing.raw_data = event.raw_data
+    return existing
+
 
 @dataclass(slots=True)
 class ProcessedContractInput:
@@ -107,7 +152,18 @@ class ProcessedMarketInput:
     question: str
     close_time: datetime | None
     raw_snapshot: dict | None
+    processed_event_id: str | None
     contracts: list[ProcessedContractInput]
+
+
+@dataclass(slots=True)
+class ProcessedEventInput:
+    processed_event_id: str
+    run_id: str
+    event_id: str | None
+    event_slug: str | None
+    event_title: str | None
+    raw_snapshot: dict | None
 
 
 @dataclass(slots=True)
@@ -125,10 +181,17 @@ class ExperimentRunInput:
 @dataclass(slots=True)
 class ExperimentResultInput:
     experiment_run_id: str
-    processed_market_id: str
+    processed_market_id: str | None
+    processed_event_id: str | None
     payload: dict | None
     score: float | None
     artifact_uri: str | None
+
+
+@dataclass(slots=True)
+class EventGroupRecord:
+    event: Event | None
+    markets: list[Market] = field(default_factory=list)
 
 
 def create_processing_run(
@@ -171,6 +234,20 @@ def finalize_processing_run(
     run.finished_at = finished_at
 
 
+def record_processed_event(session: Session, payload: ProcessedEventInput) -> ProcessedEvent:
+    processed_event = ProcessedEvent(
+        processed_event_id=payload.processed_event_id,
+        run_id=payload.run_id,
+        event_id=payload.event_id,
+        event_slug=payload.event_slug,
+        event_title=payload.event_title,
+        raw_snapshot=payload.raw_snapshot,
+    )
+    session.add(processed_event)
+    session.flush()
+    return processed_event
+
+
 def record_processed_market(session: Session, payload: ProcessedMarketInput) -> ProcessedMarket:
     processed_market = ProcessedMarket(
         processed_market_id=payload.processed_market_id,
@@ -180,6 +257,7 @@ def record_processed_market(session: Session, payload: ProcessedMarketInput) -> 
         question=payload.question,
         close_time=payload.close_time,
         raw_snapshot=payload.raw_snapshot,
+        processed_event_id=payload.processed_event_id,
     )
     session.add(processed_market)
 
@@ -277,6 +355,7 @@ def record_experiment_result(session: Session, payload: ExperimentResultInput) -
     result = ExperimentResultRecord(
         experiment_run_id=payload.experiment_run_id,
         processed_market_id=payload.processed_market_id,
+        processed_event_id=payload.processed_event_id,
         payload=payload.payload,
         score=payload.score,
         artifact_uri=payload.artifact_uri,
@@ -311,7 +390,11 @@ def list_markets(
     if category:
         filters.append(Market.category == category)
 
-    query = select(Market).options(selectinload(Market.contracts)).where(*filters)
+    query = (
+        select(Market)
+        .options(selectinload(Market.contracts), selectinload(Market.event))
+        .where(*filters)
+    )
 
     sort_column = {
         "close_time": Market.close_time,
@@ -330,6 +413,74 @@ def list_markets(
     return markets, total
 
 
+def list_events(
+    session: Session,
+    *,
+    status: str | None = None,
+    close_before: datetime | None = None,
+    close_after: datetime | None = None,
+    min_volume: float | None = None,
+    category: str | None = None,
+    sort: str = "close_time",
+    order: str = "asc",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[EventGroupRecord], int]:
+    filters = []
+    if status:
+        filters.append(Market.status == status)
+    if close_before:
+        filters.append(Market.close_time <= close_before)
+    if close_after:
+        filters.append(Market.close_time >= close_after)
+    if min_volume is not None:
+        filters.append(Market.volume_usd >= min_volume)
+    if category:
+        filters.append(Market.category == category)
+
+    query = (
+        select(Market)
+        .options(selectinload(Market.contracts), selectinload(Market.event))
+        .where(*filters)
+    )
+
+    sort_column = {
+        "close_time": Market.close_time,
+        "volume_usd": Market.volume_usd,
+        "liquidity_usd": Market.liquidity_usd,
+        "last_synced_at": Market.last_synced_at,
+    }.get(sort, Market.close_time)
+
+    sort_direction = asc if order.lower() != "desc" else desc
+    query = query.order_by(sort_direction(sort_column))
+
+    markets = session.execute(query).scalars().all()
+
+    grouped: dict[str, EventGroupRecord] = {}
+    order_keys: list[str] = []
+
+    for market in markets:
+        event = market.event
+        if event and event.event_id:
+            key = event.event_id
+        else:
+            key = f"market:{market.market_id}"
+
+        bucket = grouped.get(key)
+        if bucket is None:
+            bucket = EventGroupRecord(event=event)
+            grouped[key] = bucket
+            order_keys.append(key)
+        bucket.markets.append(market)
+
+    total_events = len(order_keys)
+    if offset >= total_events:
+        return [], total_events
+
+    sliced_keys = order_keys[offset : offset + limit]
+    return [grouped[key] for key in sliced_keys], total_events
+
+
 def upsert_markets(session: Session, markets: Iterable[NormalizedMarket]) -> None:
     for market in markets:
         upsert_market(session, market)
@@ -338,7 +489,7 @@ def upsert_markets(session: Session, markets: Iterable[NormalizedMarket]) -> Non
 def get_market(session: Session, market_id: str) -> Market | None:
     query = (
         select(Market)
-        .options(selectinload(Market.contracts))
+        .options(selectinload(Market.contracts), selectinload(Market.event))
         .where(Market.market_id == market_id)
     )
     result = session.execute(query).scalar_one_or_none()

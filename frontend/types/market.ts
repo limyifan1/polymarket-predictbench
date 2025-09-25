@@ -1,12 +1,24 @@
 export type Contract = {
-  contract_id: string;
-  market_id: string;
-  name: string;
-  outcome_type: string | null;
-  current_price: number | null;
-  confidence: number | null;
-  implied_probability: number | null;
-  raw_data?: Record<string, unknown> | null;
+    contract_id: string;
+    market_id: string;
+    name: string;
+    outcome_type: string | null;
+    current_price: number | null;
+    confidence: number | null;
+    implied_probability: number | null;
+    raw_data?: Record<string, unknown> | null;
+};
+
+export type Event = {
+  event_id: string;
+  slug: string | null;
+  title: string | null;
+  description: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  icon_url: string | null;
+  series_slug: string | null;
+  series_title: string | null;
 };
 
 export type Market = {
@@ -26,9 +38,20 @@ export type Market = {
   description: string | null;
   icon_url: string | null;
   contracts: Contract[];
+  event: Event | null;
 };
 
 export type MarketListResponse = {
   total: number;
   items: Market[];
+};
+
+export type EventWithMarkets = Event & {
+  markets: Market[];
+  market_count: number;
+};
+
+export type EventListResponse = {
+  total: number;
+  items: EventWithMarkets[];
 };
