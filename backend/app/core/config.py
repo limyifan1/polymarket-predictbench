@@ -72,6 +72,33 @@ class Settings(BaseSettings):
             raise ValueError("pipeline_run_time_utc hour must be 0-23 and minute 0-59")
         return value
 
+    @classmethod
+    @field_validator("database_url", "supabase_db_url", mode="before")
+    def _normalize_postgres_urls(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if isinstance(value, str) and value.startswith("postgres://"):
+            return "postgresql://" + value[len("postgres://") :]
+        return value
+
+    @classmethod
+    @field_validator("supabase_db_url")
+    def _require_postgres_scheme(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        url_str = str(value)
+        scheme = url_str.split(":", 1)[0].lower()
+        valid_schemes = {
+            "postgresql",
+            "postgresql+psycopg",
+            "postgresql+asyncpg",
+        }
+        if scheme not in valid_schemes:
+            raise ValueError(
+                "SUPABASE_DB_URL must be a PostgreSQL connection string (e.g. postgresql://...)."
+            )
+        return value
+
     @property
     def resolved_database_url(self) -> str:
         environment = self.environment.lower()
