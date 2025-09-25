@@ -74,7 +74,12 @@ class Settings(BaseSettings):
 
     @property
     def resolved_database_url(self) -> str:
-        if self.environment.lower() == "production" and self.supabase_db_url:
+        environment = self.environment.lower()
+        if environment == "production":
+            if not self.supabase_db_url:
+                raise ValueError(
+                    "SUPABASE_DB_URL must be set when ENVIRONMENT=production"
+                )
             return str(self.supabase_db_url)
         return str(self.database_url)
 

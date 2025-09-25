@@ -52,9 +52,6 @@ class Market(Base):
     contracts: Mapped[list["Contract"]] = relationship(
         "Contract", back_populates="market", cascade="all, delete-orphan"
     )
-    price_snapshots: Mapped[list["PriceSnapshot"]] = relationship(
-        "PriceSnapshot", back_populates="market", cascade="all, delete-orphan"
-    )
 
 
 class Contract(Base):
@@ -70,21 +67,6 @@ class Contract(Base):
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     market: Mapped[Market] = relationship("Market", back_populates="contracts")
-
-
-class PriceSnapshot(Base):
-    __tablename__ = "price_snapshots"
-
-    snapshot_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    market_id: Mapped[str] = mapped_column(String, ForeignKey("markets.market_id"), nullable=False)
-    contract_id: Mapped[str] = mapped_column(String, ForeignKey("contracts.contract_id"), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    price: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
-
-    market: Mapped[Market] = relationship("Market", back_populates="price_snapshots")
-    contract: Mapped[Contract] = relationship("Contract")
-
-    __table_args__ = (UniqueConstraint("market_id", "contract_id", "timestamp", name="uq_snapshot"),)
 
 
 class ProcessingRun(Base):

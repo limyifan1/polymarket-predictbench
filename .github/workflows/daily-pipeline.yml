@@ -1,0 +1,83 @@
+name: Daily Pipeline
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      window_days:
+        description: 'Override window-days argument'
+        required: false
+        default: ''
+      target_date:
+        description: 'Optional explicit target date (YYYY-MM-DD)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Run without writing to the database'
+        required: false
+        default: 'false'
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: '3.11'
+      ENVIRONMENT: production
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Verify Supabase configuration
+        run: |
+          if [ -z "${SUPABASE_DB_URL}" ]; then
+            echo 'SUPABASE_DB_URL secret is required' >&2
+            exit 1
+          fi
+
+      - name: Run daily pipeline
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          WINDOW_DAYS: ${{ github.event.inputs.window_days || '' }}
+          TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          SUMMARY_PATH="${GITHUB_WORKSPACE}/artifacts/pipeline-summary.json"
+          ARGS=("--summary-path" "${SUMMARY_PATH}")
+
+          if [ -n "${WINDOW_DAYS}" ]; then
+            ARGS+=("--window-days" "${WINDOW_DAYS}")
+          fi
+
+          if [ -n "${TARGET_DATE}" ]; then
+            ARGS+=("--target-date" "${TARGET_DATE}")
+          fi
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            ARGS+=("--dry-run")
+          fi
+
+          python -m pipelines.daily_run "${ARGS[@]}"
+
+      - name: Upload pipeline summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-summary
+          path: artifacts/pipeline-summary.json
+          if-no-files-found: warn

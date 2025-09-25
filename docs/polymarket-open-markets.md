@@ -40,6 +40,7 @@ pipelines.daily_run (Python CLI)
     - `SUPABASE_DB_URL` (pooled Postgres connection string for the daily run).
     - `SUPABASE_SERVICE_ROLE_KEY` (admin token for migrations and transactional writes).
     - `POLYMARKET_API_KEY` (only if Polymarket introduces auth; optional for now).
+  - The GitHub Actions workflow lives at `.github/workflows/daily-pipeline.yml`; it errors immediately if `SUPABASE_DB_URL` is missing so production runs never fall back to SQLite.
   - Environment variables: `TARGET_CLOSE_WINDOW_DAYS=7`, `PIPELINE_RUN_AT_UTC=07:00`, `ENVIRONMENT=production`, `SUPABASE_PROJECT_REF=<supabase-ref>`.
   - For manual dispatch, allow overriding `TARGET_CLOSE_WINDOW_DAYS` to backfill other horizons.
 - **Idempotency**: CLI should record a `processing_runs` entry keyed by `run_date` and `window_days`. If a rerun exists, force either an update or skip to prevent double writes (design choice captured in schema section).
@@ -110,6 +111,7 @@ pipelines.daily_run (Python CLI)
   - Provide `.env.example` entries for local usage; instruct developers to copy into `backend/.env`.
 - Extend `get_settings()` to read GitHub Actions secrets (via environment variables) with no code changes in CI.
 - Map production `DATABASE_URL` to the Supabase pooled connection string (`SUPABASE_DB_URL`) injected by GitHub Actions; expose the service-role key only to backend jobs.
+- Backend settings now enforce that `SUPABASE_DB_URL` is present whenever `ENVIRONMENT=production`, preventing accidental writes to SQLite in CI/CD.
 - Allow overriding `TARGET_CLOSE_WINDOW_DAYS` at runtime via CLI flag (`--window-days`) for backfills.
 
 ## 8. Observability & Quality Gates

@@ -57,7 +57,8 @@ uv run python -m pipelines.daily_run --summary-path ../summary.json
 - Daily GitHub Actions should set `TARGET_CLOSE_WINDOW_DAYS` (defaults to 7) and supply Supabase credentials via `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
 - `--dry-run` is useful locally to confirm API reachability without mutating the database.
 - `--summary-path` writes a JSON artifact (`processed`, `failed`, timing, etc.) to help CI notifications.
-- When the pipeline runs against production, `environment=production` and the presence of `SUPABASE_DB_URL` make the backend connect to Supabase automatically.
+- When the pipeline runs against production, `ENVIRONMENT=production` now requires `SUPABASE_DB_URL`; the app will error early if the secret is missing so we never fall back to SQLite while deploying.
+- The repository ships with `.github/workflows/daily-pipeline.yml`, which runs the pipeline every day at 07:00 UTC (and on manual dispatch). Configure repository secrets `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY` so GitHub Actions can write to Supabase. Manual runs can override `window_days`, `target_date`, or toggle a dry-run directly from the workflow UI.
 
 #### How Polymarket events are retrieved
 - The pipeline wraps `https://gamma-api.polymarket.com/markets` via `ingestion.client.PolymarketClient`, which serializes query parameters and paginates with the configured `ingestion_page_size` (default 200).
@@ -124,5 +125,4 @@ The dashboard expects the backend API at `http://localhost:8000`. Adjust `NEXT_P
 ## Next Steps
 
 1. Add background scheduling (e.g., Prefect or APScheduler) for recurring ingestion.
-2. Capture historical price snapshots using the existing `price_snapshots` table.
-3. Implement LLM experiment orchestration and surface predictions in the API/UX.
+2. Implement LLM experiment orchestration and surface predictions in the API/UX.
