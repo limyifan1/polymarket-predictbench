@@ -5,6 +5,16 @@ from pydantic import AnyUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _ensure_sqlalchemy_postgres_scheme(value: str) -> str:
+    if value.startswith("postgresql+psycopg://") or value.startswith("postgresql+asyncpg://"):
+        return value
+    if value.startswith("postgresql://"):
+        return "postgresql+psycopg://" + value[len("postgresql://") :]
+    if value.startswith("postgres://"):
+        return "postgresql+psycopg://" + value[len("postgres://") :]
+    return value
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
@@ -87,9 +97,6 @@ class Settings(BaseSettings):
         if normalized.startswith("postgres://"):
             normalized = "postgresql://" + normalized[len("postgres://") :]
 
-        if normalized.startswith("postgresql://"):
-            normalized = "postgresql+psycopg://" + normalized[len("postgresql://") :]
-
         return normalized
 
     @classmethod
@@ -99,7 +106,12 @@ class Settings(BaseSettings):
             return value
         url_str = str(value)
         scheme = url_str.split(":", 1)[0].lower()
-        valid_schemes = {"postgresql+psycopg", "postgresql+asyncpg"}
+        valid_schemes = {
+            "postgres",
+            "postgresql",
+            "postgresql+psycopg",
+            "postgresql+asyncpg",
+        }
         if scheme not in valid_schemes:
             raise ValueError(
                 "SUPABASE_DB_URL must be a PostgreSQL connection string (e.g. postgresql://...)."
@@ -114,8 +126,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "SUPABASE_DB_URL must be set when ENVIRONMENT=production"
                 )
-            return str(self.supabase_db_url)
-        return str(self.database_url)
+            return _ensure_sqlalchemy_postgres_scheme(str(self.supabase_db_url))
+        return _ensure_sqlalchemy_postgres_scheme(str(self.database_url))
 
 
 @lru_cache
