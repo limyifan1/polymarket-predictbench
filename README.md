@@ -41,25 +41,32 @@ uv run uvicorn app.main:app --reload --port 8000
 
 `uv run` executes the command inside the managed environment, so you can skip manual activation.
 
-### Ingest Polymarket Markets
+### Daily Pipeline (recommended)
 
-Use the CLI script to hydrate or refresh the database. The script defaults to open markets, 200 per page.
+The ingestion + processing pipeline now lives under `backend/pipelines/daily_run.py`. It fetches only markets closing a fixed number of days in the future (defaults to 7), executes registered experiments, persists successful results, and records metadata about the run.
 
 ```bash
 cd backend
-uv run python -m scripts.ingest_markets --limit 500 --force-close-after-now
+uv run python -m pipelines.daily_run --dry-run             # fetch + process without writes
+uv run python -m pipelines.daily_run                       # full run, writes to the configured DB
+uv run python -m pipelines.daily_run --window-days 3       # change close-date horizon
+uv run python -m pipelines.daily_run --target-date 2025-03-01  # explicit processing window
+uv run python -m pipelines.daily_run --summary-path ../summary.json
 ```
 
-You can refine the upstream API request with environment-based defaults (`INGESTION_FILTERS` in `.env`) or ad-hoc CLI flags: `python -m scripts.ingest_markets --filter closed=false --filter order=volume_num --filter ascending=false`. Filters are forwarded to `https://gamma-api.polymarket.com/markets` and must match the documented query parameters.
+- Daily GitHub Actions should set `TARGET_CLOSE_WINDOW_DAYS` (defaults to 7) and supply Supabase credentials via `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
+- `--dry-run` is useful locally to confirm API reachability without mutating the database.
+- `--summary-path` writes a JSON artifact (`processed`, `failed`, timing, etc.) to help CI notifications.
+- When the pipeline runs against production, `environment=production` and the presence of `SUPABASE_DB_URL` make the backend connect to Supabase automatically.
 
-- Practical recipes:
-  - `closed=false` ingests only open markets (replacement for the old `status=open` flag).
-  - `order=volume_num` + `ascending=false` returns the highest-volume markets first.
-  - `slug=["fed-rate-hike-in-2025","new-york-city-mayoral-election"]` targets specific markets (arrays are supplied as JSON and serialized to comma-separated lists).
-  - `start_date_min=2025-01-01T00:00:00Z` narrows ingestion to markets created after a given date.
-  - `--force-close-after-now` adds an `end_date_min` filter set to the current UTC time so only markets closing in the future are fetched.
-
-When upgrading an existing workspace, make sure the database schema includes the new `markets.raw_data` column (drop the local SQLite file or apply an equivalent migration).
+#### How Polymarket events are retrieved
+- The pipeline wraps `https://gamma-api.polymarket.com/markets` via `ingestion.client.PolymarketClient`, which serializes query parameters and paginates with the configured `ingestion_page_size` (default 200).
+- Each run enforces `closed=false` and derives `end_date_min`/`end_date_max` from the target date window so only markets closing on that day are returned.
+- Responses are normalized in `ingestion.normalize.normalize_market`, enforcing required fields (IDs, question text, close time, contracts). Invalid payloads are logged and skipped.
+- Experiments declared in `processing_experiments` (see `app/core/config.py`) run sequentially per market. Only markets where every required experiment succeeds are persisted.
+- Successful markets are written to the `processed_*` tables, experiment results are captured per market, and `crud.upsert_market` keeps the legacy `markets` table in sync for the API.
+- Pagination continues until Polymarket stops returning results. Cursor-based pagination is supported when the upstream response includes `nextCursor`; otherwise we fall back to numeric offsets.
+- For ad-hoc investigations, the legacy `python -m scripts.ingest_markets` command still works but bypasses the processing safeguards; prefer the pipeline for routine runs.
 
 Need a quick readout of open markets without another ingest run? Query the FastAPI layer after it syncs: `curl "http://localhost:8000/markets?status=open"`.
 

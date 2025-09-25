@@ -1,189 +1,139 @@
-# Polymarket Forecasting Platform Technical Plan
+# Polymarket Predictbench Daily Processing Plan
 
-## 1. Goals
-- Collect all open Polymarket markets and keep them up to date in local storage for experimentation.
-- Run multiple large language model (LLM) forecasting experiments against the collected markets.
-- Surface both raw market data and experiment outputs on a web application with support for filtering and sorting (initially by close date and volume).
-- Provide an extensible architecture that can add additional experiments, metrics, and visualizations without large refactors.
+## 1. Updated Objectives
+- Run a single ingestion + processing pipeline once per day at a predictable UTC time via GitHub Actions.
+- Collect only Polymarket markets that close exactly *N* days from the run date (default `N = 7`) and discard all other markets.
+- Execute a modular data-processing stage that can host multiple experiments without rewriting the ingestion flow.
+- Persist outputs only for markets that completed processing; avoid storing unprocessed/raw markets in the database.
+- Use Supabase (managed Postgres) in production and a local developer database in non-production environments, controlled by configuration.
+- Keep the architecture observable, testable, and easy to extend as new experiments are added.
 
-## 2. High-Level Architecture Overview
-1. **Ingestion Service** pulls open markets from Polymarket on a schedule, normalizes them, and writes to a database.
-2. **Data Store** (PostgreSQL) houses market metadata, price history snapshots, and experiment results. Time-series data can be sharded into a separate table for scale.
-3. **Experiment Orchestrator** (e.g., Prefect, Dagster, or in-house scheduler) fetches market snapshots, generates prompts, calls LLM providers, records predictions, and computes evaluation metrics.
-4. **API Layer** (FastAPI or Next.js API route) exposes REST/GraphQL endpoints for the web client to retrieve markets and experiment outputs.
-5. **Web Client** (Next.js/React) renders tables and charts, allowing users to filter/sort open markets and drill into experiment comparisons. Uses client-side caching and incremental static regeneration for responsiveness.
+## 2. End-to-End Flow Overview
+1. **Scheduler** (GitHub Actions) triggers the pipeline every day at the configured UTC time, and can also be invoked manually.
+2. **Orchestrator CLI** (new `python -m pipelines.daily_run`) determines the target close date window, pulls the relevant markets, and coordinates downstream stages.
+3. **Ingestion Stage** fetches only markets closing within the target window, normalizes them, and performs lightweight validation.
+4. **Processing Stage** runs a configurable list of experiments against each market, producing structured outputs and metadata.
+5. **Persistence Stage** writes processed markets and experiment results to the configured database inside a single transaction per market; failed markets are skipped and reported.
+6. **Reporting Stage** emits logs/metrics and uploads a JSON summary artifact for GitHub Actions (processed count, failures, runtime).
 
 ```
-Polymarket API -> Ingestion Workers -> PostgreSQL <- Experiment Orchestrator -> LLM Providers
-                                                  -> API Layer -> Web Client
+GitHub Actions (cron/manual)
+        |
+        v
+pipelines.daily_run (Python CLI)
+        |
+        v
+ +--------------+    +--------------------+    +-------------------+
+ | Ingestion    | -> | Experiment Pipeline | -> | Persistence Layer |
+ +--------------+    +--------------------+    +-------------------+
+        |
+        v
+   Monitoring & Artifacts (logs, summary JSON)
 ```
 
-## 3. Polymarket Data Acquisition
+## 3. Scheduling & Orchestration
+- **Workflow cadence**: run at 07:00 UTC daily. Cron expression: `0 7 * * *`.
+- **GitHub Action workflow**:
+  - Trigger types: `schedule` + `workflow_dispatch` for manual reruns.
+  - Steps: checkout repo, set up Python, install deps (reuse caching), load secrets, run CLI, upload summary artifact, notify on failure.
+  - Secrets required:
+    - `SUPABASE_DB_URL` (pooled Postgres connection string for the daily run).
+    - `SUPABASE_SERVICE_ROLE_KEY` (admin token for migrations and transactional writes).
+    - `POLYMARKET_API_KEY` (only if Polymarket introduces auth; optional for now).
+  - Environment variables: `TARGET_CLOSE_WINDOW_DAYS=7`, `PIPELINE_RUN_AT_UTC=07:00`, `ENVIRONMENT=production`, `SUPABASE_PROJECT_REF=<supabase-ref>`.
+  - For manual dispatch, allow overriding `TARGET_CLOSE_WINDOW_DAYS` to backfill other horizons.
+- **Idempotency**: CLI should record a `processing_runs` entry keyed by `run_date` and `window_days`. If a rerun exists, force either an update or skip to prevent double writes (design choice captured in schema section).
 
-### 3.1 API Surface
-- Primary source: Polymarket offers a GraphQL endpoint (`https://gamma-api.polymarket.com/graphql`) and a REST-ish markets endpoint (`https://gamma-api.polymarket.com/markets`). Public markets carry metadata such as question, outcomes, closing date, volume, liquidity, and current prices.
-- Rate limiting: empirical reports indicate 5-10 requests/second are tolerated. Use client-side rate limiting to avoid bans.
-- Authentication: The open endpoints do not require authentication, but adding headers (`Origin`, `Referer`) to mimic browser traffic can improve reliability.
+## 4. Ingestion Stage Design
+- **Target window calculation**:
+  - Determine `target_date = (today_utc + window_days)`.
+  - Define `[start, end)` bounds as midnight to midnight UTC of `target_date`.
+  - Pass bounds using Polymarket filters: `end_date_min=start`, `end_date_max=end`.
+- **API interactions**:
+  - Reuse `PolymarketClient` with new helper to set `closed=false`, `end_date_min`, `end_date_max`, and `page_size`.
+  - Add instrumentation logs indicating number of pages requested and rate limiting (sleep if needed).
+- **Normalization & validation**:
+  - Reuse `normalize_market` to map raw payloads into typed objects.
+  - Validate mandatory fields (`id`, `question`, `closeTime`, outcome data). Fail fast if missing or inconsistent.
+- **In-memory staging**:
+  - Accumulate normalized markets in memory (list of dataclasses) instead of persisting.
+  - Optionally emit a staging JSON artifact for debugging (guarded by `--debug-artifacts`).
 
-### 3.2 Data Model
-For each market, capture:
-- Market identifiers: `id`, `slug`, `question`, `category`, `subCategory`.
-- Temporal info: `openTime`, `closeTime`, resolution deadlines.
-- Liquidity metrics: `volume`, `liquidity`, `fee`, `spread`.
-- Outcomes: list of contracts with `id`, `name`, `price`, `confidence`, `outcomeType`.
-- Auxiliary: `icon`, `image`, `description`, `tags`.
-- (Optional) price history: either via `/markets/:id/trades` or external price snapshot service.
+## 5. Processing Pipeline Architecture
+- **Pipeline entry point**: `pipelines.daily_run` constructs a `PipelineContext` (contains run metadata, db handle, config) and iterates through markets.
+- **Experiment registry**:
+  - Define `Experiment` protocol with `name`, `version`, `requires`, and `run(market, context)` returning `ExperimentResult` (structured dataclass + optional artifacts).
+  - Implement registry loader driven by configuration (list of experiment module paths in settings).
+  - Support simple dependency ordering via `requires` list.
+- **Execution semantics**:
+  - For each market, run experiments sequentially (initial baseline). Future improvement: concurrency with async workers.
+  - If any experiment raises a non-recoverable exception, mark the market as failed and exclude from persistence while logging the failure reason.
+  - Allow experiments to short-circuit with `ExperimentSkip` to opt out gracefully.
+- **Default experiment**:
+  - Provide a placeholder `BaselineSnapshotExperiment` that records market metadata and acts as a template.
+  - Additional experiments (LLM prompts, pricing models) can be appended by registering new classes.
+- **Result packaging**:
+  - Aggregate experiment outputs into a `ProcessedMarketPayload` (includes market metadata, experiment results array, run-level metadata, optional derived metrics).
+  - Include raw market snapshot JSON for traceability, but only inside the processed record that passes all experiments.
 
-### 3.3 Ingestion Implementation
-1. **Connector**: Create a small Python module using `httpx` or `requests` to pull open markets. Support pagination via `limit/offset` parameters and expose configurable query filters (e.g., `closed=false`, `order=volume_num`, `ascending=false`).
-2. **Normalization**: Map raw JSON into a Pydantic (or dataclass) schema to enforce types. Convert timestamps to UTC `datetime` objects.
-3. **Persistence**: Upsert markets into PostgreSQL using SQLAlchemy or Prisma. Maintain `markets` and `contracts` tables with unique constraints on `id`.
-4. **Scheduling**: Trigger ingestion every 5 minutes with Prefect, APScheduler, or GitHub Actions (if running in the cloud). Store job metadata in a `ingestion_runs` table for observability.
-5. **Change detection**: Track `updated_at` and `hash` fields to detect field changes and avoid redundant writes.
+## 6. Persistence Strategy
+- **Environments**:
+  - *Production*: Supabase managed Postgres. Primary connection uses the pooled `SUPABASE_DB_URL` secret; migrations and admin tasks use the `SUPABASE_SERVICE_ROLE_KEY`.
+  - *Development*: Dockerized Postgres defined in `docker-compose.dev.yml` or local container. Default `dev` `.env` points to `postgresql://predictbench:predictbench@localhost:5432/predictbench`.
+- **Write semantics**:
+  - Wrap each market save inside a DB transaction to guarantee atomicity between market metadata and experiment outputs.
+  - Only commit if every mandatory experiment succeeded; otherwise roll back and mark as failure in `processing_failures` table.
+  - Upsert behavior: if a market already exists for the same `run_id`, update the record (keep latest experiment versions) to support reruns.
+- **Schema (new/updated tables)**:
+  - `processing_runs`: `run_id` (UUID), `run_date`, `window_days`, `target_date`, `started_at`, `finished_at`, `status`, `total_markets`, `processed_markets`, `failed_markets`, `git_sha`.
+  - `processed_markets`: `processed_market_id` (UUID), `run_id` (FK), `market_id`, `market_slug`, `question`, `close_time`, `raw_snapshot` (JSONB), `processed_at`.
+  - `processed_contracts`: `processed_contract_id`, `processed_market_id` (FK), `contract_id`, `name`, `price`, `metadata` (JSONB).
+  - `experiments`: `experiment_id`, `name`, `version`, `description`, `is_active`.
+  - `experiment_runs`: `experiment_run_id`, `run_id`, `experiment_id`, `status`, `started_at`, `finished_at`, `error_message`.
+  - `experiment_results`: `experiment_result_id`, `experiment_run_id`, `processed_market_id`, `payload` (JSONB), `score` (optional numeric), `artifact_uri`.
+  - `processing_failures`: `failure_id`, `run_id`, `market_id`, `reason`, `logged_at`, `retriable`.
+- **Access patterns**:
+  - Index `processed_markets.run_id` and `processed_markets.close_time` for reporting.
+  - Use materialized views or SQL queries to surface latest experiments per market for the frontend API.
 
-## 4. Database Schema (Initial)
+### 6.1 Supabase Integration Notes
+- **Project layout**: create `prod` and `staging` Supabase projects or branches; align environments with GitHub Action contexts.
+- **Connection pooling**: rely on Supabase's pooled connection string for the GitHub Action run to avoid exceeding connection limits; expose pool size via `DB_POOL_MAX_SIZE`.
+- **Secrets management**: store `SUPABASE_DB_URL` (pooled), `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_PROJECT_REF` in GitHub Actions. Only the backend has access to the service-role key.
+- **Auth & RLS**: keep row-level security disabled for ingestion tables; future frontend access should go through a service API so the Next.js app never uses service-role credentials.
+- **Monitoring**: enable Supabase's database observability (logs, query stats) and configure automated daily backups with point-in-time recovery.
+- **Local dev parity**: provide a `seed_supabase.sql` generated from migrations so developers can mirror schema locally when needed.
 
-### 4.1 Tables
-- `markets`
-  - `market_id` (PK, text)
-  - `slug`, `question`, `category`, `sub_category`
-  - `close_time` (timestamptz), `open_time`
-  - `volume_usd` (numeric), `liquidity_usd`, `fee_bps`
-  - `status` (`open`, `closed`, `resolved`)
-  - `last_synced_at`
-- `contracts`
-  - `contract_id` (PK)
-  - `market_id` (FK -> `markets`)
-  - `name`, `current_price`, `payout`, `confidence`
-  - `implied_probability`
-- `price_snapshots`
-  - `snapshot_id` (PK)
-  - `market_id`
-  - `contract_id`
-  - `timestamp`
-  - `price`
-- `experiments`
-  - `experiment_id` (PK)
-  - `name`, `description`, `llm_provider`, `hyperparameters` (JSONB)
-  - `created_at`
-- `experiment_runs`
-  - `run_id` (PK)
-  - `experiment_id` (FK)
-  - `executed_at`
-  - `prompt_template_version`
-  - `status`
-- `predictions`
-  - `prediction_id` (PK)
-  - `run_id`
-  - `market_id`
-  - `contract_id`
-  - `prediction_probability`
-  - `confidence`
-  - `raw_response` (JSONB)
-- `evaluation_metrics`
-  - `metric_id`
-  - `run_id`
-  - `market_id`
-  - `metric_name`
-  - `metric_value`
-  - `computed_at`
+## 7. Configuration & Secrets
+- Centralize settings in `app/core/config.py`:
+  - `PIPELINE_RUN_TIME_UTC`, `TARGET_CLOSE_WINDOW_DAYS`, `PROCESSING_EXPERIMENTS` (comma-separated module path list), `DATABASE_URL`, `ENVIRONMENT`.
+  - Provide `.env.example` entries for local usage; instruct developers to copy into `backend/.env`.
+- Extend `get_settings()` to read GitHub Actions secrets (via environment variables) with no code changes in CI.
+- Map production `DATABASE_URL` to the Supabase pooled connection string (`SUPABASE_DB_URL`) injected by GitHub Actions; expose the service-role key only to backend jobs.
+- Allow overriding `TARGET_CLOSE_WINDOW_DAYS` at runtime via CLI flag (`--window-days`) for backfills.
 
-### 4.2 Indexing
-- Index `markets.close_time` and `markets.volume_usd` for fast sorting and filtering.
-- Composite index on `contracts.market_id, contracts.name`.
-- Time-series indexes on `price_snapshots.market_id, timestamp` for charting.
+## 8. Observability & Quality Gates
+- **Logging**: Structured JSON logs (Loguru formatter) with `run_id`, `process_stage`, `market_id` to simplify GH Actions log filtering.
+- **Metrics**: Emit Prometheus-friendly counters/histograms when running outside GH Actions. Inside the action, include summary JSON (counts, durations) as artifact.
+- **Alerting**: Configure GitHub Actions to notify via Slack/Webhook on workflow failure. Optional: send summary to Slack using repository secret.
+- **Testing**:
+  - Unit tests for window calculation logic, experiment registry, and persistence transaction behavior.
+  - Integration test that spins up test Postgres (via pytest fixture) and runs pipeline against fixture API responses.
+  - Contract test for Polymarket client using recorded responses (VCR.py) to guard against API changes.
+  - Dry-run mode (`--dry-run`) for safe experimentation; prints would-be writes without touching the DB.
 
-## 5. Experimentation Framework
+## 9. Implementation Milestones
+1. **Migrate configuration**: Introduce new settings keys, document environment overrides, and stub CLI entrypoint.
+2. **Build pipeline CLI**: Implement window calculation, Polymarket fetch with new filters, and dry-run support.
+3. **Design persistence layer**: Create migrations for new tables, transactional save helpers, and failure logging.
+4. **Implement experiment framework**: Add registry, base experiment protocol, and placeholder experiment.
+5. **Integrate pipeline stages**: Wire ingestion, experiments, and persistence in the CLI; add summary reporting.
+6. **Author GitHub Actions workflow**: Schedule daily run, parameterize secrets, upload artifacts, and add notifications.
+7. **Add testing & documentation**: Cover unit/integration tests, update README, and document local dev setup.
+8. **Pilot run**: Execute workflow manually against staging database, review artifacts/logs, and adjust instrumentation before enabling daily cron.
 
-### 5.1 Experiment Lifecycle
-1. **Selection**: Pick a subset of open markets (e.g., new markets, high volume) using SQL queries.
-2. **Prompt Assembly**: Build context-rich prompts that include market question, historical price data, related news context (optional), and instructions for probability outputs.
-3. **LLM Invocation**: Use an abstraction layer to call providers (OpenAI, Anthropic, local models). Track model version and temperature.
-4. **Post-processing**: Parse responses into numeric probabilities per outcome. Validate they sum to 1 (or normalize).
-5. **Storage**: Persist predictions to `predictions` table with references to markets, contracts, and run metadata.
-6. **Evaluation**: Once markets resolve, compute Brier score, log-loss, calibration metrics. Automate evaluation jobs that run nightly.
-
-### 5.2 Tooling Recommendations
-- Use `langchain` or `llama_index` only if they simplify prompt templating; otherwise, a light custom abstraction may suffice.
-- Implement retries and exponential backoff when calling APIs.
-- Maintain experiment configurations in version-controlled YAML files for reproducibility.
-- Include a dry-run mode that prints prompts and skip actual LLM calls for debugging.
-
-## 6. Web Application
-
-### 6.1 Functional Requirements
-- Default view: table of all open markets with columns for `Question`, `Close Date`, `Volume`, `Liquidity`, `Latest Price`, `Experiment Signals` (if available).
-- Filters: by closing date range, minimum volume, category, experiment availability.
-- Sorting: by close date ascending/descending, volume descending.
-- Detail page: show market description, price chart (from `price_snapshots`), list of experiment predictions, and evaluation once resolved.
-
-### 6.2 Technical Stack
-- **Frontend**: Next.js 14 (App Router) with React Query or SWR for data fetching. Use TanStack Table for performant virtualized tables. Deploy on Vercel or existing infra.
-- **UI Components**: Tailwind CSS or Chakra UI for rapid styling; incorporate date pickers and numeric inputs for filters.
-- **State Management**: Keep filter state in the URL query params for shareability; use `useSearchParams`.
-- **Charts**: `recharts` or `nivo` for time-series probability visualization.
-
-### 6.3 API Contract
-- `GET /api/markets?status=open&close_before=2024-12-31&min_volume=10000&sort=closeTime&order=asc&limit=100`
-  - Returns paginated markets with aggregated contract info and latest experiment predictions.
-- `GET /api/markets/{market_id}`
-  - Returns market detail, contracts, price history, experiment predictions, evaluation metrics.
-- `GET /api/experiments`
-  - Lists available experiment definitions and last run status.
-
-### 6.4 Performance & Caching
-- Use server-side caching (Redis) to store the latest open markets list for 30-60 seconds to shield the database from high read traffic.
-- Enable incremental static regeneration (ISR) for the table page if traffic is mostly read-only.
-- Prefetch detail pages when hovering table rows to improve interaction latency.
-
-## 7. Initial Implementation Milestones
-
-1. **M0 – Data Ingestion MVP**
-   - Implement Polymarket market fetcher with retries.
-   - Create PostgreSQL schema (`markets`, `contracts`).
-   - Schedule ingestion job to refresh every 5 minutes.
-   - Deliver CLI command `python -m ingest.run --markets open` for manual runs.
-
-2. **M1 – Web Readout MVP**
-   - Build Next.js page `/markets` showing open markets table.
-   - Implement filters for close date (date range picker) and min volume slider.
-   - Add server-side sorting by close date and volume using API parameters.
-   - Deploy to preview environment; add monitoring (e.g., Vercel Analytics).
-
-3. **M2 – Experimentation Scaffold**
-   - Set up experiment registry table and configuration format.
-   - Implement generic LLM call wrapper with provider support.
-   - Add experiment runner that writes predictions into `predictions` table.
-   - Render experiment signal column in UI (e.g., latest probability, last updated).
-
-4. **M3 – Evaluation & Iteration**
-   - Implement evaluation job triggered on market resolution.
-   - Use dashboards to compare model performance (Brier score). Add charts to UI.
-   - Add advanced analytics (calibration plots, time-weighted accuracy).
-
-## 8. Deployment & Operations
-- **Infrastructure**: Consider using Render/Heroku for API and ingestion workers (simple) or Kubernetes if scale demands.
-- **Secrets Management**: Store LLM API keys in environment variables managed via Doppler or Vault.
-- **Monitoring**: Use Grafana/Prometheus or hosted alternatives (Datadog) to watch ingestion latency, job failures, API error rates.
-- **Alerting**: On ingestion failure or LLM quota exhaustion, send alerts via Slack/Webhooks.
-- **Cost Tracking**: Log LLM usage per run to manage spend; optionally integrate with OpenAI Usage API.
-
-## 9. Future Enhancements
-- Integrate Polymarket on-chain data (AMM state) for deeper analytics.
-- Add auto-generated news context (RAG) to improve LLM forecasts.
-- Support multi-outcome markets and liquidity curves.
-- Publish experiment leaderboards and allow interactive prompt tweaking.
-- Explore model ensembling and Bayesian calibration for improved accuracy.
-
-## 10. Risks & Mitigations
-- **API Changes**: Polymarket endpoints may shift; mitigate by wrapping calls and adding integration tests.
-- **Rate Limits/Blocks**: Introduce caching, exponential backoff, rotating proxies if necessary.
-- **LLM Drift**: Version prompts and models; re-run calibration periodically.
-- **Data Quality**: Validate schema and write tests to catch missing outcomes or zero-sum probabilities.
-- **Cost Overruns**: Enforce per-run budgets and implement alerting when approaching spend caps.
-
-## 11. Immediate Next Steps
-1. Prototype the Polymarket API client in Python and confirm schema coverage.
-2. Stand up PostgreSQL locally (Docker) and create schema migrations.
-3. Implement the initial Next.js markets table with static mocked data to validate UX.
-4. Once ingestion is stable, connect the API layer and replace mocks.
+## 10. Open Questions & Follow-Up
+- Validate Supabase project tier requirements (e.g., pro vs. team) and whether read replicas or edge functions are needed.
+- Decide on retention policy for `raw_snapshot` JSON (possible pruning after X days to reduce storage).
+- Determine whether processed data should be pushed to downstream analytics buckets (S3, BigQuery) in future iterations.
+- Clarify experiment SLAs (are partial failures acceptable if core baseline passes?).

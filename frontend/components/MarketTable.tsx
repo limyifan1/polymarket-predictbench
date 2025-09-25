@@ -13,6 +13,7 @@ const CLOSE_DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
+  hourCycle: "h23",
 };
 
 function formatCurrency(value: number | null | undefined): string {

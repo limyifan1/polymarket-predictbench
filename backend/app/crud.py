@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.orm import Session, selectinload
 
-from .models import Contract, Market
+from .models import (
+    Contract,
+    ExperimentDefinition,
+    ExperimentResultRecord,
+    ExperimentRunRecord,
+    Market,
+    ProcessedContract,
+    ProcessedMarket,
+    ProcessingFailure,
+    ProcessingRun,
+)
 
 
 @dataclass(slots=True)
@@ -77,6 +88,202 @@ def upsert_market(session: Session, market: NormalizedMarket) -> None:
 
     for orphan_contract in existing_contracts.values():
         session.delete(orphan_contract)
+
+
+@dataclass(slots=True)
+class ProcessedContractInput:
+    contract_id: str
+    name: str
+    price: float | None
+    attributes: dict | None
+
+
+@dataclass(slots=True)
+class ProcessedMarketInput:
+    processed_market_id: str
+    run_id: str
+    market_id: str
+    market_slug: str | None
+    question: str
+    close_time: datetime | None
+    raw_snapshot: dict | None
+    contracts: list[ProcessedContractInput]
+
+
+@dataclass(slots=True)
+class ExperimentRunInput:
+    experiment_run_id: str
+    run_id: str
+    experiment_name: str
+    experiment_version: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+
+
+@dataclass(slots=True)
+class ExperimentResultInput:
+    experiment_run_id: str
+    processed_market_id: str
+    payload: dict | None
+    score: float | None
+    artifact_uri: str | None
+
+
+def create_processing_run(
+    session: Session,
+    *,
+    run_id: str,
+    run_date: date,
+    window_days: int,
+    target_date: date,
+    git_sha: str | None,
+    environment: str | None,
+) -> ProcessingRun:
+    record = ProcessingRun(
+        run_id=run_id,
+        run_date=run_date,
+        window_days=window_days,
+        target_date=target_date,
+        git_sha=git_sha,
+        environment=environment,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def finalize_processing_run(
+    session: Session,
+    run: ProcessingRun,
+    *,
+    status: str,
+    total_markets: int,
+    processed_markets: int,
+    failed_markets: int,
+    finished_at: datetime,
+) -> None:
+    run.status = status
+    run.total_markets = total_markets
+    run.processed_markets = processed_markets
+    run.failed_markets = failed_markets
+    run.finished_at = finished_at
+
+
+def record_processed_market(session: Session, payload: ProcessedMarketInput) -> ProcessedMarket:
+    processed_market = ProcessedMarket(
+        processed_market_id=payload.processed_market_id,
+        run_id=payload.run_id,
+        market_id=payload.market_id,
+        market_slug=payload.market_slug,
+        question=payload.question,
+        close_time=payload.close_time,
+        raw_snapshot=payload.raw_snapshot,
+    )
+    session.add(processed_market)
+
+    for contract in payload.contracts:
+        processed_contract = ProcessedContract(
+            processed_market=processed_market,
+            contract_id=contract.contract_id,
+            name=contract.name,
+            price=contract.price,
+            attributes=contract.attributes,
+        )
+        session.add(processed_contract)
+
+    session.flush()
+    return processed_market
+
+
+def record_processing_failure(
+    session: Session,
+    *,
+    run_id: str,
+    market_id: str | None,
+    reason: str,
+    retriable: bool,
+    details: dict[str, Any] | None = None,
+) -> None:
+    failure = ProcessingFailure(
+        run_id=run_id,
+        market_id=market_id,
+        reason=reason,
+        retriable=retriable,
+        details=details,
+    )
+    session.add(failure)
+
+
+def ensure_experiment_definition(
+    session: Session,
+    *,
+    name: str,
+    version: str,
+    description: str | None = None,
+) -> ExperimentDefinition:
+    query = select(ExperimentDefinition).where(
+        ExperimentDefinition.name == name, ExperimentDefinition.version == version
+    )
+    existing = session.execute(query).scalar_one_or_none()
+    if existing:
+        return existing
+
+    definition = ExperimentDefinition(
+        name=name,
+        version=version,
+        description=description,
+    )
+    session.add(definition)
+    session.flush()
+    return definition
+
+
+def record_experiment_run(
+    session: Session,
+    payload: ExperimentRunInput,
+    description: str | None = None,
+) -> ExperimentRunRecord:
+    definition = ensure_experiment_definition(
+        session,
+        name=payload.experiment_name,
+        version=payload.experiment_version,
+        description=description,
+    )
+    existing = session.get(ExperimentRunRecord, payload.experiment_run_id)
+    if existing:
+        existing.status = payload.status
+        existing.started_at = payload.started_at
+        existing.finished_at = payload.finished_at
+        existing.error_message = payload.error_message
+        return existing
+
+    experiment_run = ExperimentRunRecord(
+        experiment_run_id=payload.experiment_run_id,
+        run_id=payload.run_id,
+        experiment=definition,
+        status=payload.status,
+        started_at=payload.started_at,
+        finished_at=payload.finished_at,
+        error_message=payload.error_message,
+    )
+    session.add(experiment_run)
+    session.flush()
+    return experiment_run
+
+
+def record_experiment_result(session: Session, payload: ExperimentResultInput) -> ExperimentResultRecord:
+    result = ExperimentResultRecord(
+        experiment_run_id=payload.experiment_run_id,
+        processed_market_id=payload.processed_market_id,
+        payload=payload.payload,
+        score=payload.score,
+        artifact_uri=payload.artifact_uri,
+    )
+    session.add(result)
+    session.flush()
+    return result
 
 
 def list_markets(

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any
 
-from pydantic import AnyUrl, Field
+from pydantic import AnyUrl, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,9 +11,21 @@ class Settings(BaseSettings):
     )
 
     debug: bool = Field(False, description="Enable FastAPI debug mode")
+    environment: str = Field(
+        default="development",
+        description="Runtime environment (development|staging|production)",
+    )
     database_url: AnyUrl | str = Field(
         default="sqlite:///../data/predictbench.db",
         description="SQLAlchemy compatible database URL",
+    )
+    supabase_db_url: AnyUrl | str | None = Field(
+        default=None,
+        description="Supabase pooled Postgres connection string for production runs",
+    )
+    supabase_service_role_key: str | None = Field(
+        default=None,
+        description="Supabase service role key for privileged operations",
     )
     polymarket_base_url: AnyUrl = Field(
         default="https://gamma-api.polymarket.com",
@@ -30,6 +42,41 @@ class Settings(BaseSettings):
         default_factory=dict,
         description="Additional query parameters applied when fetching Polymarket markets",
     )
+    target_close_window_days: int = Field(
+        default=7,
+        description="Number of days ahead to fetch closing markets for the daily pipeline",
+        ge=0,
+    )
+    pipeline_run_time_utc: str = Field(
+        default="07:00",
+        description="Daily pipeline run time in HH:MM (24h) UTC",
+    )
+    processing_experiments: list[str] = Field(
+        default_factory=lambda: [
+            "pipelines.experiments.baseline:BaselineSnapshotExperiment",
+        ],
+        description="List of experiment classes to execute during processing",
+    )
+
+    @field_validator("pipeline_run_time_utc")
+    @classmethod
+    def _validate_pipeline_time(cls, value: str) -> str:
+        if len(value) != 5 or value[2] != ":":
+            raise ValueError("pipeline_run_time_utc must be formatted as HH:MM")
+        hours, minutes = value.split(":", 1)
+        if not (hours.isdigit() and minutes.isdigit()):
+            raise ValueError("pipeline_run_time_utc must contain numeric hour and minute")
+        hour_int = int(hours)
+        minute_int = int(minutes)
+        if not 0 <= hour_int < 24 or not 0 <= minute_int < 60:
+            raise ValueError("pipeline_run_time_utc hour must be 0-23 and minute 0-59")
+        return value
+
+    @property
+    def resolved_database_url(self) -> str:
+        if self.environment.lower() == "production" and self.supabase_db_url:
+            return str(self.supabase_db_url)
+        return str(self.database_url)
 
 
 @lru_cache

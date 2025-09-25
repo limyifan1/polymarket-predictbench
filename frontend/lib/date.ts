@@ -1,4 +1,5 @@
 const TZ_PATTERN = /(?:[zZ]|[+-]\d{2}:?\d{2})$/;
+const DEFAULT_LOCALE = "en-US-u-hc-h23";
 
 function normalizeFractional(value: string): string {
   return value.replace(/(\.\d{3})\d+/, "$1");
@@ -47,5 +48,6 @@ export function formatDateTime(
     return "-";
   }
 
-  return date.toLocaleString(undefined, options);
+  const formatOptions = options ? { ...options } : undefined;
+  return new Intl.DateTimeFormat(DEFAULT_LOCALE, formatOptions).format(date);
 }

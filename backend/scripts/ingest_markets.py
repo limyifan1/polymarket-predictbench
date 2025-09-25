@@ -52,6 +52,10 @@ def main() -> None:
     settings = get_settings()
     init_db()
 
+    logger.warning(
+        "scripts.ingest_markets is deprecated for daily processing; use pipelines.daily_run instead."
+    )
+
     ingested = 0
     client_filters = dict(settings.ingestion_filters)
     if args.filter:

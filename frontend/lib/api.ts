@@ -71,7 +71,7 @@ function buildQuery(filters: MarketFilters): string {
 export async function fetchMarkets(filters: MarketFilters): Promise<MarketListResponse> {
   const query = buildQuery(filters);
   const response = await fetch(`${API_BASE_URL}/markets?${query}`, {
-    next: { revalidate: 30 },
+    cache: "no-store",
   });
 
   if (!response.ok) {

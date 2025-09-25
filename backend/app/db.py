@@ -42,7 +42,7 @@ def _build_db_components(url: str):
     return engine, session_factory
 
 
-engine, SessionLocal = _build_db_components(settings.database_url)
+engine, SessionLocal = _build_db_components(settings.resolved_database_url)
 Base = declarative_base()
 
 

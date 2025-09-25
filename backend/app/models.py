@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 
 from sqlalchemy import (
     Boolean,
-    Column,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -87,69 +87,168 @@ class PriceSnapshot(Base):
     __table_args__ = (UniqueConstraint("market_id", "contract_id", "timestamp", name="uq_snapshot"),)
 
 
-class Experiment(Base):
+class ProcessingRun(Base):
+    __tablename__ = "processing_runs"
+
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_date: Mapped[date] = mapped_column(Date, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    total_markets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_markets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_markets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    git_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    environment: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    markets: Mapped[list["ProcessedMarket"]] = relationship(
+        "ProcessedMarket", back_populates="run", cascade="all, delete-orphan"
+    )
+    experiment_runs: Mapped[list["ExperimentRunRecord"]] = relationship(
+        "ExperimentRunRecord", back_populates="processing_run", cascade="all, delete-orphan"
+    )
+    failures: Mapped[list["ProcessingFailure"]] = relationship(
+        "ProcessingFailure", back_populates="processing_run", cascade="all, delete-orphan"
+    )
+
+
+class ProcessedMarket(Base):
+    __tablename__ = "processed_markets"
+
+    processed_market_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("processing_runs.run_id"), nullable=False)
+    market_id: Mapped[str] = mapped_column(String, nullable=False)
+    market_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    close_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    run: Mapped[ProcessingRun] = relationship("ProcessingRun", back_populates="markets")
+    contracts: Mapped[list["ProcessedContract"]] = relationship(
+        "ProcessedContract", back_populates="processed_market", cascade="all, delete-orphan"
+    )
+    experiment_results: Mapped[list["ExperimentResultRecord"]] = relationship(
+        "ExperimentResultRecord", back_populates="processed_market", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "market_id", name="uq_processed_market_scope"),
+    )
+
+
+class ProcessedContract(Base):
+    __tablename__ = "processed_contracts"
+
+    processed_contract_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    processed_market_id: Mapped[str] = mapped_column(
+        String, ForeignKey("processed_markets.processed_market_id"), nullable=False
+    )
+    contract_id: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    price: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    attributes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    processed_market: Mapped[ProcessedMarket] = relationship(
+        "ProcessedMarket", back_populates="contracts"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("processed_market_id", "contract_id", name="uq_processed_contract_scope"),
+    )
+
+
+class ExperimentDefinition(Base):
     __tablename__ = "experiments"
 
     experiment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    llm_provider: Mapped[str] = mapped_column(String, nullable=False)
-    hyperparameters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
-    runs: Mapped[list["ExperimentRun"]] = relationship(
-        "ExperimentRun", back_populates="experiment", cascade="all, delete-orphan"
-    )
-
-
-class ExperimentRun(Base):
-    __tablename__ = "experiment_runs"
-
-    run_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    experiment_id: Mapped[int] = mapped_column(Integer, ForeignKey("experiments.experiment_id"), nullable=False)
-    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    prompt_template_version: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
-
-    experiment: Mapped[Experiment] = relationship("Experiment", back_populates="runs")
-    predictions: Mapped[list["Prediction"]] = relationship(
-        "Prediction", back_populates="run", cascade="all, delete-orphan"
-    )
-    metrics: Mapped[list["EvaluationMetric"]] = relationship(
-        "EvaluationMetric", back_populates="run", cascade="all, delete-orphan"
-    )
-
-
-class Prediction(Base):
-    __tablename__ = "predictions"
-
-    prediction_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("experiment_runs.run_id"), nullable=False)
-    market_id: Mapped[str] = mapped_column(String, ForeignKey("markets.market_id"), nullable=False)
-    contract_id: Mapped[str | None] = mapped_column(String, ForeignKey("contracts.contract_id"), nullable=True)
-    prediction_probability: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
-    confidence: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
-    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
-    run: Mapped[ExperimentRun] = relationship("ExperimentRun", back_populates="predictions")
-    market: Mapped[Market] = relationship("Market")
-    contract: Mapped["Contract"] = relationship("Contract")
 
     __table_args__ = (
-        UniqueConstraint("run_id", "market_id", "contract_id", name="uq_prediction_scope"),
+        UniqueConstraint("name", "version", name="uq_experiment_definition"),
+    )
+
+    runs: Mapped[list["ExperimentRunRecord"]] = relationship(
+        "ExperimentRunRecord", back_populates="experiment", cascade="all, delete-orphan"
     )
 
 
-class EvaluationMetric(Base):
-    __tablename__ = "evaluation_metrics"
+class ExperimentRunRecord(Base):
+    __tablename__ = "experiment_runs"
 
-    metric_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[int] = mapped_column(Integer, ForeignKey("experiment_runs.run_id"), nullable=False)
-    market_id: Mapped[str | None] = mapped_column(String, ForeignKey("markets.market_id"), nullable=True)
-    metric_name: Mapped[str] = mapped_column(String, nullable=False)
-    metric_value: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
-    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    extra: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    experiment_run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("processing_runs.run_id"), nullable=False)
+    experiment_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("experiments.experiment_id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    run: Mapped[ExperimentRun] = relationship("ExperimentRun", back_populates="metrics")
+    processing_run: Mapped[ProcessingRun] = relationship(
+        "ProcessingRun", back_populates="experiment_runs"
+    )
+    experiment: Mapped[ExperimentDefinition] = relationship(
+        "ExperimentDefinition", back_populates="runs"
+    )
+    results: Mapped[list["ExperimentResultRecord"]] = relationship(
+        "ExperimentResultRecord", back_populates="experiment_run", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "experiment_id", name="uq_experiment_run_scope"),
+    )
+
+
+class ExperimentResultRecord(Base):
+    __tablename__ = "experiment_results"
+
+    experiment_result_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    experiment_run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("experiment_runs.experiment_run_id"), nullable=False
+    )
+    processed_market_id: Mapped[str] = mapped_column(
+        String, ForeignKey("processed_markets.processed_market_id"), nullable=False
+    )
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    score: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
+    artifact_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    experiment_run: Mapped[ExperimentRunRecord] = relationship(
+        "ExperimentRunRecord", back_populates="results"
+    )
+    processed_market: Mapped[ProcessedMarket] = relationship(
+        "ProcessedMarket", back_populates="experiment_results"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_run_id",
+            "processed_market_id",
+            name="uq_experiment_result_scope",
+        ),
+    )
+
+
+class ProcessingFailure(Base):
+    __tablename__ = "processing_failures"
+
+    failure_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("processing_runs.run_id"), nullable=False)
+    market_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    retriable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    processing_run: Mapped[ProcessingRun] = relationship(
+        "ProcessingRun", back_populates="failures"
+    )
