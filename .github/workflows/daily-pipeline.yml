@@ -26,6 +26,8 @@ jobs:
       ENVIRONMENT: production
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      INGESTION_FILTERS: ${{ vars.INGESTION_FILTERS }}
+      INGESTION_PAGE_SIZE: ${{ vars.INGESTION_PAGE_SIZE }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -56,6 +58,8 @@ jobs:
           WINDOW_DAYS: ${{ github.event.inputs.window_days || '' }}
           TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          INGESTION_FILTERS: ${{ vars.INGESTION_FILTERS }}
+          INGESTION_PAGE_SIZE: ${{ vars.INGESTION_PAGE_SIZE }}
         run: |
           SUMMARY_PATH="${GITHUB_WORKSPACE}/artifacts/pipeline-summary.json"
           ARGS=("--summary-path" "${SUMMARY_PATH}")
