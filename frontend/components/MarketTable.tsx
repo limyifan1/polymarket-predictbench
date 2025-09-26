@@ -91,254 +91,174 @@ function primaryLine(text: string | null | undefined): string | null {
 }
 
 export function MarketTable({ events }: { events: EventWithMarkets[] }) {
-  const [expandedEvents, setExpandedEvents] = useState<Record<string, boolean>>({});
   const [expandedMarkets, setExpandedMarkets] = useState<Record<string, boolean>>({});
   const rows = useMemo(() => events, [events]);
 
-  if (!rows.length) {
-    return (
-      <section className="empty-state">
-        <strong>No events matched the current filters.</strong>
-        <span>Adjust the filters to explore more open Polymarket events.</span>
-      </section>
-    );
-  }
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      {rows.map((event) => {
-        const isExpanded = Boolean(expandedEvents[event.event_id]);
-        const { totalVolume, totalLiquidity, nextClose } = summarizeEvent(event);
-        const eventDescription = primaryLine(event.description);
-        const polymarketEventUrl = event.slug
-          ? `https://polymarket.com/event/${event.slug}`
-          : null;
+    <section className="market-results">
+      <header className="market-results__header">
+        <h2 className="section-title">Event breakdown</h2>
+        <p className="section-subtitle">
+          Every event includes the full set of markets so you can compare close times, depth, and pricing without
+          extra clicks.
+        </p>
+      </header>
 
-        return (
-          <section
-            key={event.event_id}
-            style={{
-              border: "1px solid #e2e8f0",
-              borderRadius: "0.75rem",
-              padding: "1.25rem",
-              boxShadow: "0 1px 2px rgba(15, 23, 42, 0.06)",
-              backgroundColor: "#fff",
-            }}
-          >
-            <header
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "0.75rem",
-                marginBottom: isExpanded ? "1rem" : 0,
-              }}
-            >
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-                  <h2 style={{ fontSize: "1.25rem", margin: 0 }}>
-                    {polymarketEventUrl ? (
-                      <a
-                        href={polymarketEventUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{ textDecoration: "underline" }}
-                      >
-                        {event.title ?? event.slug ?? event.event_id}
-                      </a>
-                    ) : (
-                      event.title ?? event.slug ?? event.event_id
+      {!rows.length ? (
+        <div className="empty-state">
+          <strong>No events matched the current filters.</strong>
+          <span>Adjust the filters to explore more open Polymarket events.</span>
+        </div>
+      ) : (
+        <div className="market-results__list">
+          {rows.map((event) => {
+            const { totalVolume, totalLiquidity, nextClose } = summarizeEvent(event);
+            const eventDescription = primaryLine(event.description);
+            const polymarketEventUrl = event.slug ? `https://polymarket.com/event/${event.slug}` : null;
+
+            return (
+              <article
+                key={event.event_id}
+                className="event-card"
+              >
+                <header className="event-card__header">
+                  <div className="event-card__title-group">
+                    <h3 className="event-card__title">
+                      {polymarketEventUrl ? (
+                        <a
+                          href={polymarketEventUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="event-card__link"
+                        >
+                          {event.title ?? event.slug ?? event.event_id}
+                        </a>
+                      ) : (
+                        event.title ?? event.slug ?? event.event_id
+                      )}
+                    </h3>
+                    <span className="badge">{event.market_count} markets</span>
+                  </div>
+                  {eventDescription && <p className="event-card__description">{eventDescription}</p>}
+                  <dl className="event-card__stats">
+                    <div>
+                      <dt>Total volume</dt>
+                      <dd>{formatCurrency(totalVolume)}</dd>
+                    </div>
+                    <div>
+                      <dt>Total liquidity</dt>
+                      <dd>{formatCurrency(totalLiquidity)}</dd>
+                    </div>
+                    <div>
+                      <dt>Next close</dt>
+                      <dd>{nextClose ? formatCloseDate(nextClose) : "-"}</dd>
+                    </div>
+                    {event.start_time && (
+                      <div>
+                        <dt>Event start</dt>
+                        <dd>{formatCloseDate(event.start_time)}</dd>
+                      </div>
                     )}
-                  </h2>
-                  <span className="badge">{event.market_count} markets</span>
-                </div>
-                {eventDescription && (
-                  <div style={{ color: "#475569", marginTop: "0.35rem" }}>{eventDescription}</div>
-                )}
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "0.5rem",
-                    marginTop: "0.75rem",
-                    fontSize: "0.85rem",
-                    color: "#64748b",
-                  }}
-                >
-                  <span className="badge" style={{ backgroundColor: "#f1f5f9" }}>
-                    Total Volume: {formatCurrency(totalVolume)}
-                  </span>
-                  <span className="badge" style={{ backgroundColor: "#f1f5f9" }}>
-                    Total Liquidity: {formatCurrency(totalLiquidity)}
-                  </span>
-                  <span className="badge" style={{ backgroundColor: "#f1f5f9" }}>
-                    Next Close: {nextClose ? formatCloseDate(nextClose) : "-"}
-                  </span>
-                  {event.start_time && (
-                    <span className="badge" style={{ backgroundColor: "#f1f5f9" }}>
-                      Event Start: {formatCloseDate(event.start_time)}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setExpandedEvents((prev) => ({
-                      ...prev,
-                      [event.event_id]: !isExpanded,
-                    }))
-                  }
-                  style={{
-                    padding: "0.5rem 0.75rem",
-                    borderRadius: "0.5rem",
-                    border: "1px solid #cbd5f5",
-                    backgroundColor: isExpanded ? "#1d4ed8" : "#2563eb",
-                    color: "white",
-                    cursor: "pointer",
-                    width: "fit-content",
-                  }}
-                >
-                  {isExpanded ? "Hide markets" : "View markets"}
-                </button>
-              </div>
-            </header>
+                  </dl>
+                </header>
 
-            {isExpanded && (
-              <div className="table-container">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Question</th>
-                      <th>Close Date (UTC)</th>
-                      <th>Volume</th>
-                      <th>Liquidity</th>
-                      <th>Outcomes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <div className="event-card__markets event-card__markets--grid">
+                  <div className="market-grid">
                     {event.markets.map((market: Market) => {
                       const marketExpanded = Boolean(expandedMarkets[market.market_id]);
                       const description = market.description?.trim() ?? "";
                       const descriptionLine = primaryLine(description);
                       const hasMore = description.length > 0 && descriptionLine !== description;
-                      const polymarketMarketUrl = market.slug
-                        ? `https://polymarket.com/event/${market.slug}`
-                        : null;
+                      const polymarketMarketUrl = market.slug ? `https://polymarket.com/event/${market.slug}` : null;
 
                       return (
-                        <tr key={market.market_id}>
-                          <td>
-                            <div style={{ fontWeight: 600, marginBottom: "0.25rem" }}>
+                        <div key={market.market_id} className="market-card">
+                          <header className="market-card__header">
+                            <h4 className="market-card__title">
                               {polymarketMarketUrl ? (
-                                <a
-                                  href={polymarketMarketUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  style={{ textDecoration: "underline" }}
-                                >
+                                <a href={polymarketMarketUrl} target="_blank" rel="noopener noreferrer">
                                   {market.question}
                                 </a>
                               ) : (
                                 market.question
                               )}
+                            </h4>
+                            <div className="market-card__tags">
+                              {market.category && <span className="badge">{market.category}</span>}
+                              <span className="market-card__sync">Last sync {formatDate(market.last_synced_at)}</span>
                             </div>
+                          </header>
+
+                          <div className="market-card__summary">
                             {!marketExpanded && descriptionLine && (
-                              <div
-                                style={{
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                  fontSize: "0.9rem",
-                                  color: "#475569",
-                                  marginBottom: hasMore ? "0.25rem" : 0,
-                                }}
-                              >
-                                {descriptionLine}
-                              </div>
+                              <p className="market-card__excerpt">{descriptionLine}</p>
                             )}
                             {marketExpanded && description && (
-                              <div
-                                style={{
-                                  fontSize: "0.9rem",
-                                  color: "#475569",
-                                  marginBottom: "0.25rem",
-                                  whiteSpace: "pre-wrap",
-                                }}
-                              >
-                                {description}
-                              </div>
+                              <p className="market-card__details">{description}</p>
                             )}
                             {hasMore && (
                               <button
                                 type="button"
+                                className="market-row__toggle"
+                                data-expanded={marketExpanded ? "true" : "false"}
+                                aria-expanded={marketExpanded}
                                 onClick={() =>
                                   setExpandedMarkets((prev) => ({
                                     ...prev,
                                     [market.market_id]: !marketExpanded,
                                   }))
                                 }
-                                style={{
-                                  border: "none",
-                                  background: "none",
-                                  padding: 0,
-                                  color: "#3b82f6",
-                                  cursor: "pointer",
-                                  fontSize: "0.8rem",
-                                }}
                               >
                                 {marketExpanded ? "Show less" : "Show more"}
                               </button>
                             )}
-                            <div
-                              style={{
-                                display: "flex",
-                                gap: "0.5rem",
-                                fontSize: "0.75rem",
-                                color: "#94a3b8",
-                                marginTop: "0.35rem",
-                              }}
-                            >
-                              {market.category && <span className="badge">{market.category}</span>}
-                              <span>Last sync: {formatDate(market.last_synced_at)}</span>
+                          </div>
+
+                          <dl className="market-card__stats">
+                            <div>
+                              <dt>Close (UTC)</dt>
+                              <dd>{formatCloseDate(market.close_time)}</dd>
                             </div>
-                          </td>
-                          <td>{formatCloseDate(market.close_time)}</td>
-                          <td>{formatCurrency(market.volume_usd)}</td>
-                          <td>{formatCurrency(market.liquidity_usd)}</td>
-                          <td>
-                            <div
-                              style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: "0.15rem",
-                                fontSize: "0.85rem",
-                              }}
-                            >
-                              {market.contracts.map((contract) => (
-                                <span key={contract.contract_id}>
-                                  <strong>{contract.name}</strong>
-                                  {" — "}
+                            <div>
+                              <dt>Volume</dt>
+                              <dd>{formatCurrency(market.volume_usd)}</dd>
+                            </div>
+                            <div>
+                              <dt>Liquidity</dt>
+                              <dd>{formatCurrency(market.liquidity_usd)}</dd>
+                            </div>
+                          </dl>
+
+                          <ul className="market-card__outcomes">
+                            {market.contracts.map((contract) => (
+                              <li key={contract.contract_id}>
+                                <span className="market-card__outcome-name">{contract.name}</span>
+                                <span className="market-card__outcome-value">
                                   {formatOutcomePrice(contract.current_price)}
                                   {contract.implied_probability !== null &&
                                   contract.implied_probability !== undefined ? (
-                                    <> ({formatProbability(contract.implied_probability)})</>
+                                    <>
+                                      {" "}
+                                      <span className="market-card__probability">
+                                        {formatProbability(contract.implied_probability)}
+                                      </span>
+                                    </>
                                   ) : null}
                                 </span>
-                              ))}
-                              {!market.contracts.length && <span>-</span>}
-                            </div>
-                          </td>
-                        </tr>
+                              </li>
+                            ))}
+                            {!market.contracts.length && <li className="market-row__outcome-empty">-</li>}
+                          </ul>
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        );
-      })}
-    </div>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
