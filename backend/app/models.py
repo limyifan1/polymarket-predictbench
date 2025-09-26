@@ -26,6 +26,12 @@ class MarketStatus(str, Enum):
     RESOLVED = "resolved"
 
 
+class ExperimentStage(str, Enum):
+    RESEARCH = "research"
+    FORECAST = "forecast"
+    POSTHOC = "posthoc"
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -140,6 +146,9 @@ class ProcessedEvent(Base):
     experiment_results: Mapped[list["ExperimentResultRecord"]] = relationship(
         "ExperimentResultRecord", back_populates="processed_event", cascade="all, delete-orphan"
     )
+    research_artifacts: Mapped[list["ResearchArtifactRecord"]] = relationship(
+        "ResearchArtifactRecord", back_populates="processed_event", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("run_id", "event_id", name="uq_processed_event_scope"),
@@ -170,6 +179,9 @@ class ProcessedMarket(Base):
     )
     experiment_results: Mapped[list["ExperimentResultRecord"]] = relationship(
         "ExperimentResultRecord", back_populates="processed_market", cascade="all, delete-orphan"
+    )
+    research_artifacts: Mapped[list["ResearchArtifactRecord"]] = relationship(
+        "ResearchArtifactRecord", back_populates="processed_market", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
@@ -225,6 +237,9 @@ class ExperimentRunRecord(Base):
     experiment_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("experiments.experiment_id"), nullable=False
     )
+    stage: Mapped[str] = mapped_column(
+        String, nullable=False, default=ExperimentStage.FORECAST.value
+    )
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -239,10 +254,61 @@ class ExperimentRunRecord(Base):
     results: Mapped[list["ExperimentResultRecord"]] = relationship(
         "ExperimentResultRecord", back_populates="experiment_run", cascade="all, delete-orphan"
     )
+    research_artifacts: Mapped[list["ResearchArtifactRecord"]] = relationship(
+        "ResearchArtifactRecord", back_populates="experiment_run", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("run_id", "experiment_id", name="uq_experiment_run_scope"),
     )
+
+
+class ResearchArtifactRecord(Base):
+    __tablename__ = "research_artifacts"
+
+    artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
+    experiment_run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("experiment_runs.experiment_run_id"), nullable=False
+    )
+    processed_market_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("processed_markets.processed_market_id"), nullable=True
+    )
+    processed_event_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("processed_events.processed_event_id"), nullable=True
+    )
+    variant_name: Mapped[str] = mapped_column(String, nullable=False)
+    variant_version: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    artifact_uri: Mapped[str | None] = mapped_column(String, nullable=True)
+    artifact_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    experiment_run: Mapped["ExperimentRunRecord"] = relationship(
+        "ExperimentRunRecord", back_populates="research_artifacts"
+    )
+    processed_market: Mapped[ProcessedMarket | None] = relationship(
+        "ProcessedMarket", back_populates="research_artifacts"
+    )
+    processed_event: Mapped[ProcessedEvent | None] = relationship(
+        "ProcessedEvent", back_populates="research_artifacts"
+    )
+    forecast_results: Mapped[list["ExperimentResultRecord"]] = relationship(
+        "ExperimentResultRecord", back_populates="source_artifact"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_run_id", "processed_market_id", "artifact_hash",
+            name="uq_research_artifact_hash"
+        ),
+    )
+
+
 
 
 class ExperimentResultRecord(Base):
@@ -258,6 +324,14 @@ class ExperimentResultRecord(Base):
     processed_event_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("processed_events.processed_event_id"), nullable=True
     )
+    stage: Mapped[str] = mapped_column(
+        String, nullable=False, default=ExperimentStage.FORECAST.value
+    )
+    variant_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    variant_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_artifact_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("research_artifacts.artifact_id"), nullable=True
+    )
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     score: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     artifact_uri: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -271,6 +345,9 @@ class ExperimentResultRecord(Base):
     )
     processed_event: Mapped[ProcessedEvent | None] = relationship(
         "ProcessedEvent", back_populates="experiment_results"
+    )
+    source_artifact: Mapped[ResearchArtifactRecord | None] = relationship(
+        "ResearchArtifactRecord", back_populates="forecast_results"
     )
 
     __table_args__ = (

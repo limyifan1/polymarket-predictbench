@@ -43,6 +43,10 @@
   - `--window-days` / `--target-date` control the close-date window (mutually exclusive).
   - `--summary-path` writes a JSON artifact with run metadata and failures.
   - `--limit` is helpful when debugging a narrow slice of markets.
+  - `--suite` (repeatable) runs only selected suites from `PROCESSING_EXPERIMENT_SUITES`.
+  - `--stage` controls which stages execute (`research`, `forecast`, or `both`).
+  - `--include-research` / `--include-forecast` filter variants by name or `suite:variant`.
+  - `--debug-dump-dir` points to a directory where JSON payload dumps are written (great for dry-run inspection).
 - Legacy script `python -m scripts.ingest_markets` exists but bypasses processing safeguards—prefer the pipeline.
 
 ## Frontend (Next.js)

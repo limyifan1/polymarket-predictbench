@@ -59,16 +59,18 @@ uv run python -m pipelines.daily_run --limit 5 --dry-run   # only inspect the fi
 - `--dry-run` is useful locally to confirm API reachability without mutating the database.
 - Repository variables `INGESTION_FILTERS` and `INGESTION_PAGE_SIZE` propagate to the pipeline so the Polymarket client uses the same pagination/filters as your production runs.
 - `--summary-path` writes a JSON artifact with `run_id`, `run_date`, `target_date`, totals, and the failure list to help CI notifications.
+- Additional filters: `--suite` (repeatable) limits execution to specific suites, `--stage` toggles research/forecast stages, and `--include-research` / `--include-forecast` run only selected variants.
+- `--debug-dump-dir <path>` writes per-event JSON dumps of research + forecast payloads (useful during dry runs).
 - Markets are bucketed by event before experiments run; a failed experiment marks every market in that event, and the API exposes the grouped view via `GET /events` for the frontend dashboard.
 - When the pipeline runs against production, `ENVIRONMENT=production` now requires `SUPABASE_DB_URL`; the app will error early if the secret is missing so we never fall back to SQLite while deploying.
 - The repository ships with `.github/workflows/daily-pipeline.yml`, which runs the pipeline every day at 07:00 UTC (and on manual dispatch). Configure repository secrets `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY` so GitHub Actions can write to Supabase. Use the pooled Postgres **connection string** from Supabase (`Database` → `Connection string` → `psql`) – it should start with `postgresql://`; the app automatically upgrades it to `postgresql+psycopg://` and injects `sslmode=require`/`target_session_attrs=read-write` so SQLAlchemy negotiates correctly with Supabase. Manual runs can override `window_days`, `target_date`, or toggle a dry-run directly from the workflow UI.
-- The pipeline aborts if no experiments are registered; configure `processing_experiments` in `backend/app/core/config.py` (or `PROCESSING_EXPERIMENTS` in `.env`) when adding new experiment modules.
+- The pipeline aborts if no suites are registered; configure `processing_experiment_suites` in `backend/app/core/config.py` (or `PROCESSING_EXPERIMENT_SUITES` in `.env`) when adding new experiment suites.
 
 #### How Polymarket events are retrieved
 - The pipeline wraps `https://gamma-api.polymarket.com/markets` via `ingestion.client.PolymarketClient`, which serializes query parameters and paginates with the configured `ingestion_page_size` (default 200).
 - Each run enforces `closed=false` and derives `end_date_min`/`end_date_max` from the target date window so only markets closing on that day are returned.
 - Responses are normalized in `ingestion.normalize.normalize_market`, enforcing required fields (IDs, question text, close time, contracts). Invalid payloads are logged and skipped.
-- Experiments declared in `processing_experiments` (see `app/core/config.py`) run sequentially per market. Only markets where every required experiment succeeds are persisted.
+- Suites declared in `processing_experiment_suites` (see `app/core/config.py`) run sequentially per market event. Only markets where required strategies succeed are persisted.
 - Successful markets are written to the `processed_*` tables, experiment results are captured per market, and `crud.upsert_market` keeps the legacy `markets` table in sync for the API.
 - Pagination continues until Polymarket stops returning results. Cursor-based pagination is supported when the upstream response includes `nextCursor`; otherwise we fall back to numeric offsets.
 - For ad-hoc investigations, the legacy `python -m scripts.ingest_markets` command still works but bypasses the processing safeguards; prefer the pipeline for routine runs.

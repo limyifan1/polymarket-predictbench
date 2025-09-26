@@ -1,10 +1,23 @@
-"""Experiment implementations available to the processing pipeline."""
+"""Experiment building blocks for the processing pipeline."""
 
-from .base import Experiment, ExperimentExecutionError, ExperimentResult, ExperimentSkip
+from .base import (
+    EventMarketGroup,
+    ExperimentExecutionError,
+    ExperimentSkip,
+    ForecastOutput,
+    ForecastStrategy,
+    ResearchOutput,
+    ResearchStrategy,
+    StrategyDescriptor,
+)
 
 __all__ = [
-    "Experiment",
+    "EventMarketGroup",
     "ExperimentExecutionError",
-    "ExperimentResult",
     "ExperimentSkip",
+    "ForecastOutput",
+    "ForecastStrategy",
+    "ResearchOutput",
+    "ResearchStrategy",
+    "StrategyDescriptor",
 ]

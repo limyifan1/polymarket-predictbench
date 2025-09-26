@@ -59,6 +59,11 @@ def _apply_schema_updates() -> None:
     _ensure_column(engine, "markets", "event_id", "VARCHAR")
     _ensure_column(engine, "processed_markets", "processed_event_id", "VARCHAR")
     _ensure_column(engine, "experiment_results", "processed_event_id", "VARCHAR")
+    _ensure_column(engine, "experiment_runs", "stage", "VARCHAR")
+    _ensure_column(engine, "experiment_results", "stage", "VARCHAR")
+    _ensure_column(engine, "experiment_results", "variant_name", "VARCHAR")
+    _ensure_column(engine, "experiment_results", "variant_version", "VARCHAR")
+    _ensure_column(engine, "experiment_results", "source_artifact_id", "VARCHAR")
 
 
 def get_db() -> Generator[Session, None, None]:

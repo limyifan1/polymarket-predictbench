@@ -83,10 +83,14 @@ class Settings(BaseSettings):
         description="Daily pipeline run time in HH:MM (24h) UTC",
     )
     processing_experiments: list[str] = Field(
+        default_factory=list,
+        description="DEPRECATED: use processing_experiment_suites instead",
+    )
+    processing_experiment_suites: list[str] = Field(
         default_factory=lambda: [
-            "pipelines.experiments.baseline:BaselineSnapshotExperiment",
+            "pipelines.experiments.baseline:BaselineSnapshotSuite",
         ],
-        description="List of experiment classes to execute during processing",
+        description="List of experiment suites to execute during processing",
     )
 
     @field_validator("pipeline_run_time_utc")

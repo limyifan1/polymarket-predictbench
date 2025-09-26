@@ -38,6 +38,7 @@ pnpm-debug.log*
 
 # Project data
 data/
+debug_dumps/
 
 # OS-specific files
 .DS_Store

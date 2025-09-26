@@ -20,6 +20,7 @@ from .models import (
     ProcessedMarket,
     ProcessingFailure,
     ProcessingRun,
+    ResearchArtifactRecord,
 )
 
 
@@ -172,6 +173,7 @@ class ExperimentRunInput:
     run_id: str
     experiment_name: str
     experiment_version: str
+    stage: str
     status: str
     started_at: datetime
     finished_at: datetime | None
@@ -183,8 +185,25 @@ class ExperimentResultInput:
     experiment_run_id: str
     processed_market_id: str | None
     processed_event_id: str | None
+    stage: str
+    variant_name: str | None
+    variant_version: str | None
+    source_artifact_id: str | None
     payload: dict | None
     score: float | None
+    artifact_uri: str | None
+
+
+@dataclass(slots=True)
+class ResearchArtifactInput:
+    artifact_id: str
+    experiment_run_id: str
+    processed_market_id: str | None
+    processed_event_id: str | None
+    variant_name: str
+    variant_version: str
+    artifact_hash: str | None
+    payload: dict | None
     artifact_uri: str | None
 
 
@@ -331,6 +350,7 @@ def record_experiment_run(
     )
     existing = session.get(ExperimentRunRecord, payload.experiment_run_id)
     if existing:
+        existing.stage = payload.stage
         existing.status = payload.status
         existing.started_at = payload.started_at
         existing.finished_at = payload.finished_at
@@ -341,6 +361,7 @@ def record_experiment_run(
         experiment_run_id=payload.experiment_run_id,
         run_id=payload.run_id,
         experiment=definition,
+        stage=payload.stage,
         status=payload.status,
         started_at=payload.started_at,
         finished_at=payload.finished_at,
@@ -351,11 +372,47 @@ def record_experiment_run(
     return experiment_run
 
 
+def record_research_artifact(
+    session: Session, payload: ResearchArtifactInput
+) -> ResearchArtifactRecord:
+    existing = session.get(ResearchArtifactRecord, payload.artifact_id)
+    if existing:
+        existing.processed_market_id = payload.processed_market_id
+        existing.processed_event_id = payload.processed_event_id
+        existing.variant_name = payload.variant_name
+        existing.variant_version = payload.variant_version
+        existing.artifact_hash = payload.artifact_hash
+        existing.payload = payload.payload
+        existing.artifact_uri = payload.artifact_uri
+        return existing
+
+    artifact = ResearchArtifactRecord(
+        artifact_id=payload.artifact_id,
+        experiment_run_id=payload.experiment_run_id,
+        processed_market_id=payload.processed_market_id,
+        processed_event_id=payload.processed_event_id,
+        variant_name=payload.variant_name,
+        variant_version=payload.variant_version,
+        artifact_hash=payload.artifact_hash,
+        payload=payload.payload,
+        artifact_uri=payload.artifact_uri,
+    )
+    session.add(artifact)
+    session.flush()
+    return artifact
+
+
+
+
 def record_experiment_result(session: Session, payload: ExperimentResultInput) -> ExperimentResultRecord:
     result = ExperimentResultRecord(
         experiment_run_id=payload.experiment_run_id,
         processed_market_id=payload.processed_market_id,
         processed_event_id=payload.processed_event_id,
+        stage=payload.stage,
+        variant_name=payload.variant_name,
+        variant_version=payload.variant_version,
+        source_artifact_id=payload.source_artifact_id,
         payload=payload.payload,
         score=payload.score,
         artifact_uri=payload.artifact_uri,

@@ -1,73 +1,59 @@
 from __future__ import annotations
 
-from .base import EventMarketGroup, Experiment, ExperimentResult
+from dataclasses import dataclass
+from typing import Mapping
+
+from .base import EventMarketGroup, ForecastOutput, ForecastStrategy, ResearchOutput
 from ..context import PipelineContext
+from .suites import BaseExperimentSuite
 
 
-class BaselineSnapshotExperiment(Experiment):
+@dataclass(slots=True)
+class BaselineSnapshotForecast(ForecastStrategy):
     """Capture normalized market snapshot for downstream auditing."""
 
-    name = "baseline_snapshot"
+    requires: tuple[str, ...] = ()
+
+    name: str = "baseline_snapshot"
+    version: str = "1.0"
+    description: str | None = "Persist normalized Polymarket market and contract payloads."
+
+    def run(
+        self,
+        group: EventMarketGroup,
+        research_artifacts: Mapping[str, ResearchOutput],
+        context: PipelineContext,
+    ) -> list[ForecastOutput]:
+        outputs: list[ForecastOutput] = []
+        for market in group.markets:
+            outcome_prices: dict[str, float | None] = {
+                contract.name: float(contract.current_price) if contract.current_price is not None else None
+                for contract in market.contracts
+            }
+            reasoning = "Baseline snapshot of Polymarket order book; no modeled forecast applied."
+            outputs.append(
+                ForecastOutput(
+                    market_id=market.market_id,
+                    outcome_prices=outcome_prices,
+                    reasoning=reasoning,
+                )
+            )
+        return outputs
+
+
+class BaselineSnapshotSuite(BaseExperimentSuite):
+    """Default suite providing baseline snapshot persistence."""
+
+    suite_id = "baseline"
     version = "1.0"
-    description = "Persist normalized Polymarket market and contract payloads."
+    description = "Persist normalized market snapshots without additional research."
 
-    def run(self, group: EventMarketGroup, context: PipelineContext) -> ExperimentResult:
-        event_payload = None
-        if group.event:
-            event = group.event
-            event_payload = {
-                "event_id": event.event_id,
-                "slug": event.slug,
-                "title": event.title,
-                "description": event.description,
-                "start_time": event.start_time.isoformat() if event.start_time else None,
-                "end_time": event.end_time.isoformat() if event.end_time else None,
-                "icon_url": event.icon_url,
-                "series_slug": event.series_slug,
-                "series_title": event.series_title,
-                "raw_data": event.raw_data,
-            }
+    def _build_research_strategies(self):  # noqa: D401
+        # Baseline suite does not require research stage.
+        return ()
 
-        markets_payload = [
-            {
-                "market": {
-                    "market_id": market.market_id,
-                    "slug": market.slug,
-                    "question": market.question,
-                    "category": market.category,
-                    "sub_category": market.sub_category,
-                    "open_time": market.open_time.isoformat() if market.open_time else None,
-                    "close_time": market.close_time.isoformat() if market.close_time else None,
-                    "volume_usd": market.volume_usd,
-                    "liquidity_usd": market.liquidity_usd,
-                    "fee_bps": market.fee_bps,
-                    "status": market.status,
-                    "description": market.description,
-                    "icon_url": market.icon_url,
-                    "raw_data": market.raw_data,
-                },
-                "contracts": [
-                    {
-                        "contract_id": contract.contract_id,
-                        "name": contract.name,
-                        "outcome_type": contract.outcome_type,
-                        "current_price": contract.current_price,
-                        "confidence": contract.confidence,
-                        "implied_probability": contract.implied_probability,
-                        "raw_data": contract.raw_data,
-                    }
-                    for contract in market.contracts
-                ],
-            }
-            for market in group.markets
-        ]
+    def _build_forecast_strategies(self):  # noqa: D401
+        return (BaselineSnapshotForecast(),)
 
-        payload = {
-            "event": event_payload,
-            "markets": markets_payload,
-        }
-        return ExperimentResult(
-            name=self.name,
-            version=self.version,
-            payload=payload,
-        )
+
+__all__ = ["BaselineSnapshotSuite", "BaselineSnapshotForecast"]
