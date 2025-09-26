@@ -50,7 +50,7 @@ pipelines.daily_run (CLI)
   - `--suite <id>` (repeatable): restrict execution to specific suites configured in `processing_experiment_suites`.
   - `--stage {research,forecast,both}`: execute only the selected stages (default `both`).
   - `--include-research` / `--include-forecast`: comma-separated variant names (or `suite_id:variant`) to run.
-  - `--debug-dump-dir <path>`: write per-event JSON dumps of research/forecast payloads (helpful during dry runs).
+  - `--debug-dump-dir <path>`: write per-event JSON dumps of research/forecast payloads (defaults to `PIPELINE_DEBUG_DUMP_DIR`); pass `--no-debug-dump` to skip.
 - The CLI resolves start/end bounds for the target day in UTC (`00:00:00` inclusive to the next day's midnight exclusive) and injects them into the Polymarket filters.
 - Suites are instantiated before ingestion. If no suites are configured the CLI aborts early so we never persist half-baked runs.
 - Markets are bucketed by event before suites execute. Failures at either stage mark every market in that bucket and produce shared processed-event metadata for the API.

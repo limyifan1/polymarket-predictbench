@@ -180,8 +180,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--debug-dump-dir",
         type=Path,
-        default=None,
-        help="Optional directory to write research/forecast payload dumps",
+        default=(
+            Path(settings.pipeline_debug_dump_dir)
+            if settings.pipeline_debug_dump_dir
+            else None
+        ),
+        help="Directory to write research/forecast payload dumps (set via PIPELINE_DEBUG_DUMP_DIR; use --no-debug-dump to disable)",
+    )
+    parser.add_argument(
+        "--no-debug-dump",
+        action="store_true",
+        help="Disable writing debug payload dumps for this run",
     )
     return parser.parse_args()
 
@@ -593,8 +602,8 @@ def main() -> None:
         enabled_forecast = None
 
     debug_dump_dir: Path | None = None
-    if args.debug_dump_dir:
-        debug_dump_dir = args.debug_dump_dir.expanduser().resolve()
+    if not args.no_debug_dump and args.debug_dump_dir:
+        debug_dump_dir = Path(args.debug_dump_dir).expanduser().resolve()
         debug_dump_dir.mkdir(parents=True, exist_ok=True)
 
     experiment_metas, experiment_meta_index = _prepare_experiment_metadata(suites)

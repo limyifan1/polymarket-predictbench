@@ -68,7 +68,7 @@ The default suite (`BaselineSnapshotSuite` in `backend/pipelines/experiments/bas
 - `--suite <id>` (repeatable): run only specific suites.
 - `--stage {research,forecast,both}`: limit execution to selected stages.
 - `--include-research foo,bar` and `--include-forecast promptA,promptB`: filter variants by name or `suite_id:variant`. Filters apply before execution; filtered variants are marked as `skipped` in run metadata.
-- `--debug-dump-dir ./tmp/dumps`: emit per-event JSON payloads for quick inspection (dry runs and limited real runs).
+- `--debug-dump-dir ./tmp/dumps`: emit per-event JSON payloads for quick inspection (defaults to `PIPELINE_DEBUG_DUMP_DIR`; add `--no-debug-dump` to skip).
 
 ## Artifact Layout
 No additional filesystem storage is required. Artifacts live in the database and, optionally, suites can set `artifact_uri` values pointing at external blobs (e.g. Supabase storage) when needed.

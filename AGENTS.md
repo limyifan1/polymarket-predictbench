@@ -46,7 +46,7 @@
   - `--suite` (repeatable) runs only selected suites from `PROCESSING_EXPERIMENT_SUITES`.
   - `--stage` controls which stages execute (`research`, `forecast`, or `both`).
   - `--include-research` / `--include-forecast` filter variants by name or `suite:variant`.
-  - `--debug-dump-dir` points to a directory where JSON payload dumps are written (great for dry-run inspection).
+  - `--debug-dump-dir` points to a directory where JSON payload dumps are written (default comes from `PIPELINE_DEBUG_DUMP_DIR`); use `--no-debug-dump` to disable for a run.
 - Legacy script `python -m scripts.ingest_markets` exists but bypasses processing safeguards—prefer the pipeline.
 
 ## Frontend (Next.js)

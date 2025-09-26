@@ -89,8 +89,37 @@ class Settings(BaseSettings):
     processing_experiment_suites: list[str] = Field(
         default_factory=lambda: [
             "pipelines.experiments.baseline:BaselineSnapshotSuite",
+            "pipelines.experiments.openai:OpenAIResearchForecastSuite",
         ],
         description="List of experiment suites to execute during processing",
+    )
+    pipeline_debug_dump_dir: str | None = Field(
+        default="../debug_dumps",
+        description="Default directory where pipeline debug dumps are written (set blank to disable)",
+    )
+    openai_api_key: str | None = Field(
+        default=None,
+        description="API key used for OpenAI-powered research and forecasting",
+    )
+    openai_api_base: AnyUrl | str | None = Field(
+        default=None,
+        description="Optional override for the OpenAI API base URL (Azure/proxy support)",
+    )
+    openai_org_id: str | None = Field(
+        default=None,
+        description="Optional OpenAI organization identifier",
+    )
+    openai_project_id: str | None = Field(
+        default=None,
+        description="Optional OpenAI project identifier for usage scoping",
+    )
+    openai_research_model: str = Field(
+        default="gpt-4.1-mini",
+        description="Model used for the research stage when calling OpenAI",
+    )
+    openai_forecast_model: str = Field(
+        default="gpt-5",
+        description="Model used for the forecast stage when calling OpenAI",
     )
 
     @field_validator("pipeline_run_time_utc")
