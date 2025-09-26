@@ -1,6 +1,6 @@
 # Polymarket PredictBench
 
-An experimental platform for running large language model forecasting experiments on Polymarket data. The stack collects all open markets, stores them in a relational database, exposes a FastAPI backend, and renders a Next.js dashboard with filtering and sorting by close date and volume.
+An experimental platform for running large language model forecasting experiments on Polymarket data. The pipeline ingests open markets that close within a configurable window, stores them in a relational database, exposes a FastAPI backend that groups markets by event, and renders a Next.js dashboard with filtering and sorting by close date, volume, and liquidity.
 
 ## Repository Layout
 
@@ -55,9 +55,11 @@ uv run python -m pipelines.daily_run --summary-path ../summary.json
 uv run python -m pipelines.daily_run --limit 5 --dry-run   # only inspect the first 5 markets
 ```
 
-- Daily GitHub Actions can override `TARGET_CLOSE_WINDOW_DAYS` if needed (otherwise the settings default of 7 is used) and must supply Supabase credentials via `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
+- Daily GitHub Actions runs pass repository secrets `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY` and can override the ingestion window via the `TARGET_CLOSE_WINDOW_DAYS` environment variable or the `window_days` workflow dispatch input (defaults to 7).
 - `--dry-run` is useful locally to confirm API reachability without mutating the database.
-- `--summary-path` writes a JSON artifact (`processed`, `failed`, timing, etc.) to help CI notifications.
+- Repository variables `INGESTION_FILTERS` and `INGESTION_PAGE_SIZE` propagate to the pipeline so the Polymarket client uses the same pagination/filters as your production runs.
+- `--summary-path` writes a JSON artifact with `run_id`, `run_date`, `target_date`, totals, and the failure list to help CI notifications.
+- Markets are bucketed by event before experiments run; a failed experiment marks every market in that event, and the API exposes the grouped view via `GET /events` for the frontend dashboard.
 - When the pipeline runs against production, `ENVIRONMENT=production` now requires `SUPABASE_DB_URL`; the app will error early if the secret is missing so we never fall back to SQLite while deploying.
 - The repository ships with `.github/workflows/daily-pipeline.yml`, which runs the pipeline every day at 07:00 UTC (and on manual dispatch). Configure repository secrets `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY` so GitHub Actions can write to Supabase. Use the pooled Postgres **connection string** from Supabase (`Database` → `Connection string` → `psql`) – it should start with `postgresql://`; the app automatically upgrades it to `postgresql+psycopg://` and injects `sslmode=require`/`target_session_attrs=read-write` so SQLAlchemy negotiates correctly with Supabase. Manual runs can override `window_days`, `target_date`, or toggle a dry-run directly from the workflow UI.
 - The pipeline aborts if no experiments are registered; configure `processing_experiments` in `backend/app/core/config.py` (or `PROCESSING_EXPERIMENTS` in `.env`) when adding new experiment modules.
@@ -120,6 +122,8 @@ The dashboard expects the backend API at `http://localhost:8000`. Adjust `NEXT_P
 - The ingestion pipeline normalizes markets/outcomes and upserts them into the relational schema. Contract lists are synced on each ingest.
 - Both markets and contracts now retain the raw Polymarket payload (`markets.raw_data` / `contracts.raw_data`) so downstream tooling can reference the exact upstream response.
 - API endpoints:
+  - `GET /healthz` – Simple readiness probe used by orchestrators and deployment checks.
+  - `GET /events` – Event-level aggregation with nested markets, respecting the same filter/sort options.
   - `GET /markets` – Paginated listing with filters for status, close window, min volume, and ordering.
   - `GET /markets/{market_id}` – Detailed market payload with nested contracts.
 - Frontend filters submit as query-string parameters so the UI is shareable and stateless.

@@ -49,6 +49,7 @@ pipelines.daily_run (CLI)
   - `--summary-path <path>`: write a formatted JSON summary. The helper creates parent directories automatically.
 - The CLI resolves the start/end bounds for the target day in UTC (`00:00:00` inclusive to the next day's midnight exclusive) and injects them into the Polymarket filters.
 - Experiments are loaded before ingestion starts. If no experiments are configured the CLI aborts early so we never persist half-baked runs.
+- Markets are grouped by event before experiments run. A single experiment failure marks every market in that event bucket and produces shared processed-event metadata, which is the same grouping exposed by the FastAPI `/events` endpoint.
 - When running with writes enabled, the CLI records:
   - A `processing_runs` row with run metadata and the Git SHA (if supplied via `GITHUB_SHA`).
   - An `experiment_runs` record for each registered experiment with status transitions (`running` → `completed`/`failed`).
