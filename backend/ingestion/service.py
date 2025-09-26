@@ -7,9 +7,9 @@ from typing import Any
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app import crud
 from app.core.config import settings
 from app.db import SessionLocal
+from app.repositories import MarketRepository
 
 from .client import PolymarketClient
 from .normalize import normalize_market
@@ -56,9 +56,10 @@ def ingest_open_markets(*, force_close_after_now: bool = False) -> int:
     client_kwargs = {"filters": base_filters} if base_filters else {}
     with PolymarketClient(**client_kwargs) as client:
         with session_scope() as session:
+            market_repo = MarketRepository(session)
             for raw_market in client.iter_markets():
                 normalized = normalize_market(raw_market)
-                crud.upsert_market(session, normalized)
+                market_repo.upsert_market(normalized)
                 count += 1
     logger.info("Ingested {} markets", count)
     return count

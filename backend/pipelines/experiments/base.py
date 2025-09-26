@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
 
-from app.crud import NormalizedEvent, NormalizedMarket
+from app.domain import NormalizedEvent, NormalizedMarket
 from app.models import ExperimentStage
 
 from ..context import PipelineContext

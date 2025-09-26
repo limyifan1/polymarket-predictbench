@@ -12,19 +12,18 @@ from uuid import uuid4
 
 from loguru import logger
 
-from app import crud
 from app.core.config import get_settings
 from app.db import init_db
-from app.crud import (
+from app.repositories.pipeline_models import (
     ExperimentResultInput,
     ExperimentRunInput,
-    NormalizedEvent,
-    NormalizedMarket,
     ProcessedContractInput,
     ProcessedEventInput,
     ProcessedMarketInput,
     ResearchArtifactInput,
 )
+from app.repositories import MarketRepository, ProcessingRepository
+from app.domain import NormalizedEvent, NormalizedMarket
 from ingestion.client import PolymarketClient
 from ingestion.normalize import normalize_market
 from ingestion.service import session_scope
@@ -618,6 +617,9 @@ def main() -> None:
     )
 
     with session_scope() as session:
+        processing_repo = ProcessingRepository(session)
+        market_repo = MarketRepository(session)
+
         pipeline_context = PipelineContext(
             run_id=run_id,
             run_date=run_date,
@@ -630,8 +632,7 @@ def main() -> None:
 
         processing_run = None
         if not args.dry_run:
-            processing_run = crud.create_processing_run(
-                session,
+            processing_run = processing_repo.create_processing_run(
                 run_id=run_id,
                 run_date=run_date,
                 window_days=window_days,
@@ -640,8 +641,7 @@ def main() -> None:
                 environment=settings.environment,
             )
             for meta in experiment_metas:
-                crud.record_experiment_run(
-                    session,
+                processing_repo.record_experiment_run(
                     ExperimentRunInput(
                         experiment_run_id=meta.run_identifier,
                         run_id=run_id,
@@ -684,8 +684,7 @@ def main() -> None:
                         "Normalization failed for market payload {}", raw_market.get("id", "unknown")
                     )
                     if not args.dry_run:
-                        crud.record_processing_failure(
-                            session,
+                        processing_repo.record_processing_failure(
                             run_id=run_id,
                             market_id=raw_market.get("id"),
                             reason="normalization_failed",
@@ -742,8 +741,7 @@ def main() -> None:
                             }
                         )
                         if not args.dry_run:
-                            crud.record_processing_failure(
-                                session,
+                            processing_repo.record_processing_failure(
                                 run_id=run_id,
                                 market_id=market.market_id,
                                 reason="experiment_failed",
@@ -783,8 +781,7 @@ def main() -> None:
                             market.market_id,
                         )
                         if not args.dry_run:
-                            crud.record_processing_failure(
-                                session,
+                            processing_repo.record_processing_failure(
                                 run_id=run_id,
                                 market_id=market.market_id,
                                 reason="no_forecast_results",
@@ -799,8 +796,7 @@ def main() -> None:
                     continue
 
                 processed_event_id = str(uuid4())
-                processed_event = crud.record_processed_event(
-                    session,
+                processed_event = processing_repo.record_processed_event(
                     ProcessedEventInput(
                         processed_event_id=processed_event_id,
                         run_id=run_id,
@@ -808,15 +804,14 @@ def main() -> None:
                         event_slug=event_payload.slug if event_payload else None,
                         event_title=event_payload.title if event_payload else None,
                         raw_snapshot=event_payload.raw_data if event_payload else None,
-                    ),
+                    )
                 )
 
                 market_to_processed: dict[str, str] = {}
 
                 for market in markets:
                     processed_market_id = str(uuid4())
-                    processed_market = crud.record_processed_market(
-                        session,
+                    processed_market = processing_repo.record_processed_market(
                         ProcessedMarketInput(
                             processed_market_id=processed_market_id,
                             run_id=run_id,
@@ -827,11 +822,11 @@ def main() -> None:
                             raw_snapshot=market.raw_data,
                             processed_event_id=processed_event.processed_event_id,
                             contracts=_convert_contracts(market),
-                        ),
+                        )
                     )
                     market_to_processed[market.market_id] = processed_market.processed_market_id
 
-                    crud.upsert_market(session, market)
+                    market_repo.upsert_market(market)
 
                 # Persist research artifacts and stage results
                 for suite_id, records in suite_research_records.items():
@@ -843,8 +838,7 @@ def main() -> None:
                         artifact_hash = record.output.artifact_hash or _compute_artifact_hash(payload)
                         artifact_id = str(uuid4())
                         record.artifact_id = artifact_id
-                        crud.record_research_artifact(
-                            session,
+                        processing_repo.record_research_artifact(
                             ResearchArtifactInput(
                                 artifact_id=artifact_id,
                                 experiment_run_id=record.meta.run_identifier,
@@ -855,10 +849,9 @@ def main() -> None:
                                 artifact_hash=artifact_hash,
                                 payload=payload,
                                 artifact_uri=record.output.artifact_uri,
-                            ),
+                            )
                         )
-                        crud.record_experiment_result(
-                            session,
+                        processing_repo.record_experiment_result(
                             ExperimentResultInput(
                                 experiment_run_id=record.meta.run_identifier,
                                 processed_market_id=None,
@@ -870,7 +863,7 @@ def main() -> None:
                                 payload=payload,
                                 score=None,
                                 artifact_uri=record.output.artifact_uri,
-                            ),
+                            )
                         )
 
                 for forecast_record in forecast_records:
@@ -894,8 +887,7 @@ def main() -> None:
                         "outcomePrices": forecast_record.output.outcome_prices,
                         "reasoning": forecast_record.output.reasoning,
                     }
-                    crud.record_experiment_result(
-                        session,
+                    processing_repo.record_experiment_result(
                         ExperimentResultInput(
                             experiment_run_id=forecast_record.meta.run_identifier,
                             processed_market_id=processed_market_id,
@@ -907,7 +899,7 @@ def main() -> None:
                             payload=payload,
                             score=forecast_record.output.score,
                             artifact_uri=forecast_record.output.artifact_uri,
-                        ),
+                        )
                     )
 
         finally:
@@ -916,8 +908,7 @@ def main() -> None:
         finished_at = datetime.now(timezone.utc)
 
         if not args.dry_run and processing_run is not None:
-            crud.finalize_processing_run(
-                session,
+            processing_repo.finalize_processing_run(
                 processing_run,
                 status="completed" if summary.failed_markets == 0 else "completed_with_errors",
                 total_markets=summary.total_markets,
@@ -930,8 +921,7 @@ def main() -> None:
                 status = meta.status
                 if status == "running":
                     status = "completed"
-                crud.record_experiment_run(
-                    session,
+                processing_repo.record_experiment_run(
                     ExperimentRunInput(
                         experiment_run_id=meta.run_identifier,
                         run_id=run_id,

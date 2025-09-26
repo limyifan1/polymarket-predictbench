@@ -5,9 +5,10 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 
-from . import crud, schemas
+from . import schemas
 from .core.config import settings
 from .db import get_db, init_db
+from .services.market_service import MarketQuery, MarketService
 
 app = FastAPI(title="PredictBench API", version="0.1.0", debug=settings.debug)
 
@@ -22,6 +23,35 @@ def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _build_market_query(
+    *,
+    status: str | None,
+    close_before: datetime | None,
+    close_after: datetime | None,
+    min_volume: float | None,
+    category: str | None,
+    sort: str,
+    order: str,
+    limit: int,
+    offset: int,
+) -> MarketQuery:
+    return MarketQuery(
+        status=status,
+        close_before=close_before,
+        close_after=close_after,
+        min_volume=min_volume,
+        category=category,
+        sort=sort,
+        order=order,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _market_service(db=Depends(get_db)) -> MarketService:
+    return MarketService(db)
+
+
 @app.get("/events", response_model=schemas.EventList, tags=["events"])
 def list_events(
     *,
@@ -34,10 +64,9 @@ def list_events(
     order: Annotated[str, Query(description="Sort order (asc|desc)", pattern="^(asc|desc)$", min_length=3, max_length=4)] = "asc",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-    db=Depends(get_db),
+    service: MarketService = Depends(_market_service),
 ):
-    groups, total = crud.list_events(
-        db,
+    query = _build_market_query(
         status=status,
         close_before=close_before,
         close_after=close_after,
@@ -48,35 +77,8 @@ def list_events(
         limit=limit,
         offset=offset,
     )
-
-    items: list[schemas.EventWithMarkets] = []
-    for group in groups:
-        markets = [schemas.Market.model_validate(market) for market in group.markets]
-        if group.event is not None:
-            event_payload = schemas.Event.model_validate(group.event)
-        else:
-            primary = markets[0] if markets else None
-            event_payload = schemas.Event(
-                event_id=f"market:{primary.market_id}" if primary else "unknown",
-                slug=primary.slug if primary else None,
-                title=primary.question if primary else None,
-                description=primary.description if primary else None,
-                start_time=primary.open_time if primary else None,
-                end_time=primary.close_time if primary else None,
-                icon_url=primary.icon_url if primary else None,
-                series_slug=None,
-                series_title=None,
-            )
-
-        items.append(
-            schemas.EventWithMarkets(
-                **event_payload.model_dump(),
-                markets=markets,
-                market_count=len(markets),
-            )
-        )
-
-    return schemas.EventList(total=total, items=items)
+    result = service.list_events(query)
+    return schemas.EventList(total=result.total, items=list(result.events))
 
 
 @app.get("/markets", response_model=schemas.MarketList, tags=["markets"])
@@ -91,10 +93,9 @@ def list_markets(
     order: Annotated[str, Query(description="Sort order (asc|desc)", pattern="^(asc|desc)$", min_length=3, max_length=4)] = "asc",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-    db=Depends(get_db),
+    service: MarketService = Depends(_market_service),
 ):
-    markets, total = crud.list_markets(
-        db,
+    query = _build_market_query(
         status=status,
         close_before=close_before,
         close_after=close_after,
@@ -105,13 +106,13 @@ def list_markets(
         limit=limit,
         offset=offset,
     )
-    items = [schemas.Market.model_validate(market) for market in markets]
-    return schemas.MarketList(total=total, items=items)
+    result = service.list_markets(query)
+    return schemas.MarketList(total=result.total, items=list(result.markets))
 
 
 @app.get("/markets/{market_id}", response_model=schemas.Market, tags=["markets"])
-def get_market(market_id: str, db=Depends(get_db)):
-    market = crud.get_market(db, market_id)
+def get_market(market_id: str, service: MarketService = Depends(_market_service)):
+    market = service.get_market(market_id)
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
-    return schemas.Market.model_validate(market)
+    return market

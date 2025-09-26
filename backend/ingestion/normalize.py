@@ -6,7 +6,7 @@ from typing import Any
 
 from dateutil import parser as date_parser
 
-from app import crud
+from app.domain import NormalizedContract, NormalizedEvent, NormalizedMarket
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -59,7 +59,7 @@ def _build_contracts(raw_market: dict[str, Any], market_id: str) -> list[dict[st
     return built_contracts
 
 
-def _build_event(raw_market: dict[str, Any]) -> crud.NormalizedEvent | None:
+def _build_event(raw_market: dict[str, Any]) -> NormalizedEvent | None:
     events = _as_list(raw_market.get("events"))
     if not events:
         return None
@@ -75,7 +75,7 @@ def _build_event(raw_market: dict[str, Any]) -> crud.NormalizedEvent | None:
     series_entries = _as_list(primary.get("series"))
     series_entry = series_entries[0] if series_entries and isinstance(series_entries[0], dict) else None
 
-    return crud.NormalizedEvent(
+    return NormalizedEvent(
         event_id=str(raw_event_id),
         slug=primary.get("slug"),
         title=primary.get("title") or primary.get("name"),
@@ -161,7 +161,7 @@ def _normalize_fee_bps(raw_fee: Any) -> int | None:
     return normalized_int
 
 
-def normalize_contract(raw_contract: dict[str, Any], market_id: str) -> crud.NormalizedContract:
+def normalize_contract(raw_contract: dict[str, Any], market_id: str) -> NormalizedContract:
     raw_id = raw_contract.get("id") or raw_contract.get("contractId") or raw_contract.get("_id")
     if raw_id:
         contract_id = str(raw_id)
@@ -182,7 +182,7 @@ def normalize_contract(raw_contract: dict[str, Any], market_id: str) -> crud.Nor
     if implied_probability is None and price is not None:
         implied_probability = price
 
-    return crud.NormalizedContract(
+    return NormalizedContract(
         contract_id=contract_id,
         name=name,
         outcome_type=outcome_type,
@@ -193,7 +193,7 @@ def normalize_contract(raw_contract: dict[str, Any], market_id: str) -> crud.Nor
     )
 
 
-def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
+def normalize_market(raw_market: dict[str, Any]) -> NormalizedMarket:
     market_id = str(raw_market.get("id") or raw_market.get("marketId") or raw_market.get("_id"))
     contracts_raw = _build_contracts(raw_market, market_id)
     contracts = [normalize_contract(contract, market_id) for contract in contracts_raw]
@@ -201,7 +201,7 @@ def normalize_market(raw_market: dict[str, Any]) -> crud.NormalizedMarket:
     close_time = _parse_datetime(raw_market.get("closeTime") or raw_market.get("endDate"))
     event = _build_event(raw_market)
 
-    return crud.NormalizedMarket(
+    return NormalizedMarket(
         market_id=market_id,
         slug=raw_market.get("slug"),
         question=raw_market.get("question") or raw_market.get("title") or "",
