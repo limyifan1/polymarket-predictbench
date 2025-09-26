@@ -72,7 +72,7 @@
 
 ## CI & automation
 - `.github/workflows/daily-pipeline.yml` runs every day at 07:00 UTC and on manual dispatch.
-- Secrets required in GitHub: `SUPABASE_DB_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+- Secrets required in GitHub: `SUPABASE_DB_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY` (optionally `OPENAI_API_BASE`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`).
 - Repository variables: `INGESTION_FILTERS`, `INGESTION_PAGE_SIZE`.
 - Workflow emits `artifacts/pipeline-summary.json`; keep that path stable if you touch the workflow so downstream tooling continues to find it.
 
