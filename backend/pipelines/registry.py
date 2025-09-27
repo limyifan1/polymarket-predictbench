@@ -8,12 +8,15 @@ from .experiments.registry import load_suites as _load_suites
 from .experiments.suites import BaseExperimentSuite
 
 
-def load_suites(import_paths: Iterable[str]) -> list[BaseExperimentSuite]:
-    return _load_suites(import_paths)
+def load_suites(requested: Iterable[str] | None = None) -> list[BaseExperimentSuite]:
+    """Proxy to :func:`pipelines.experiments.registry.load_suites`."""
+
+    return _load_suites(requested)
 
 
 def load_experiments(import_paths: Iterable[str]):
     """Legacy shim kept for compatibility."""
+
     logger.error(
         "load_experiments is deprecated. Update configuration to use experiment suites."
     )

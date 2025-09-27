@@ -47,7 +47,7 @@ pipelines.daily_run (CLI)
   - `--dry-run`: bypasses all database writes while still counting processed/failed markets.
   - `--limit <int>`: stop after processing the specified number of markets (useful for smoke tests).
   - `--summary-path <path>`: write a formatted JSON summary. The helper creates parent directories automatically.
-  - `--suite <id>` (repeatable): restrict execution to specific suites configured in `processing_experiment_suites`.
+  - `--suite <id>` (repeatable): restrict execution to specific suites registered in `pipelines.experiments.registry`.
   - `--stage {research,forecast,both}`: execute only the selected stages (default `both`).
   - `--include-research` / `--include-forecast`: comma-separated variant names (or `suite_id:variant`) to run.
   - `--debug-dump-dir <path>`: write per-event JSON dumps of research/forecast payloads (defaults to `PIPELINE_DEBUG_DUMP_DIR`); pass `--no-debug-dump` to skip.
@@ -62,8 +62,10 @@ pipelines.daily_run (CLI)
 
 ## 5. Experiments & Extensibility
 - Strategies live in `backend/pipelines/experiments`. `ResearchStrategy` implements `run(group, context)` and returns `ResearchOutput`; `ForecastStrategy` implements `run(group, artifacts, context)` and returns `ForecastOutput` with optional scores or diagnostics.
-- Suites subclass `BaseExperimentSuite` to bundle strategies. The default `BaselineSnapshotSuite` provides the historical snapshot payload as a forecast strategy with no research dependencies.
-- To add a suite, implement the strategies, create a suite subclass that returns them, and append the dotted path (e.g. `pipelines.experiments.custom:CustomSuite`) to `PROCESSING_EXPERIMENT_SUITES` in `.env` or the GitHub Actions environment.
+- Suites typically subclass `DeclarativeExperimentSuite` (see `backend/pipelines/experiments/suites.py`) and declare `research_factories` / `forecast_factories` via the `strategy(...)` helper. Prefer the `suite(...)` convenience helper when no subclass-specific logic is required—it produces the same declarative suite without defining a class. The default `BaselineSnapshotSuite` still works as a plain `BaseExperimentSuite` for legacy behaviour. Code-first configuration happens in `backend/pipelines/experiments/registry.py` by editing `REGISTERED_SUITE_BUILDERS`.
+- YAML suite files remain supported via `pipelines.experiments.configuration.load_yaml_suites`, but they duplicate the Python configuration, lack static validation, and cannot express dynamic wiring (shared helpers, conditionals). Use them only when non-engineers must tweak experiments without touching the repository; otherwise prefer editing the registry module directly.
+- Every research strategy listed in a suite runs for each event bucket. Forecast strategies execute for the same events once all dependencies named in their `requires` tuple have succeeded; missing dependencies raise during suite construction. Define a new suite when you need a different bundle of strategies (e.g., production vs. experimental) and new strategies when you change prompts, tooling, or output schemas.
+- To add a suite, implement the strategies, wire them up with `strategy(...)` (or override the `_build_*` hooks directly), and append a builder callable to `REGISTERED_SUITE_BUILDERS` in `pipelines.experiments.registry`. The pipeline imports that tuple directly—no environment variables required.
 - Strategies may raise `ExperimentSkip` to opt out per event. Any other exception bubbles up as `ExperimentExecutionError`, marking the event as failed and recording a retriable processing failure when writes are enabled.
 
 ## 6. Persistence Model

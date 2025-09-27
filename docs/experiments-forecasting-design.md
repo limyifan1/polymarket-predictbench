@@ -19,19 +19,83 @@ Located in `backend/pipelines/experiments/base.py`:
 - `ResearchOutput` remains a lightweight container for research payloads and diagnostics.
 
 ### Suites
-Defined via subclasses of `BaseExperimentSuite` (`backend/pipelines/experiments/suites.py`). A suite declares:
-- `suite_id` / `version` / optional `description`.
-- `_build_research_strategies()` returning an iterable of `ResearchStrategy` instances.
-- `_build_forecast_strategies()` returning an iterable of `ForecastStrategy` instances.
-The base class validates duplicate names and ensures each forecast dependency exists. Experiment names recorded in the DB follow `"{suite_id}:{stage}:{variant}"`.
+Suites are assembled via the helpers in `backend/pipelines/experiments/suites.py`. The most ergonomic option is the declarative API:
+
+```python
+from pipelines.experiments.suites import DeclarativeExperimentSuite, strategy, suite
+
+class ExampleSuite(DeclarativeExperimentSuite):
+    suite_id = "demo"
+    research_factories = (
+        strategy(MyResearchStrategy, temperature=0.4),
+    )
+    forecast_factories = (
+        strategy(MyForecastStrategy),
+    )
+```
+
+`strategy(...)` accepts an instance, class, or callable (plus optional kwargs) and instantiates a fresh strategy when the suite is created. Under the hood `DeclarativeExperimentSuite` materialises the strategies and performs the same validation as before (duplicate name detection, dependency checks). Experiment names recorded in the DB follow `"{suite_id}:{stage}:{variant}"`.
+
+Prefer the `suite(...)` helper when no subclass-specific behaviour is required:
+
+```python
+from pipelines.experiments.suites import strategy, suite
+
+openai_suite = suite(
+    "openai",
+    version="0.2",
+    description="Experimental OpenAI-backed research + forecast flow",
+    research=[
+        strategy(OpenAIWebSearchResearch),
+        strategy(AtlasResearchSweep),
+        strategy(HorizonSignalTimeline),
+    ],
+    forecasts=[
+        strategy(GPT5ForecastStrategy),
+    ],
+)
+```
+
+Both patterns produce a `BaseExperimentSuite` subclass instance; the helper merely removes the boilerplate of defining an empty class body.
+
+When extra control is required you can still subclass `BaseExperimentSuite` directly and override `_build_research_strategies()` / `_build_forecast_strategies()`; the declarative version simply wraps that pattern with less boilerplate.
 
 The default suite (`BaselineSnapshotSuite` in `backend/pipelines/experiments/baseline.py`) provides the legacy snapshot logic as a forecast strategy with no research dependencies.
 
+#### Execution semantics
+- **Research stage**: every research strategy listed in the suite runs for each event bucket that flows through the pipeline. A strategy may raise `ExperimentSkip` to opt out for a specific event; otherwise a structured `ResearchOutput` is persisted and keyed by the strategy's `name` attribute.
+- **Forecast stage**: forecast strategies run for the same event after their `requires` dependencies are satisfied. The dependency list must reference research strategy names. Multiple forecasts can share the same research artifact, and a single forecast can depend on more than one research variant.
+- **Fan-out**: suites may combine multiple research and forecast entries. Each research strategy emits exactly one artifact per event. Forecast strategies are evaluated once per event and generate one or more `ForecastOutput` objects (one per market).
+- **Partial failures**: when a research strategy fails, only dependent forecasts are skipped. Other research/forecast variants in the suite continue to run.
+
+Create a **new research strategy** when the prompt, tooling, or output schema changes. Create a **new forecast strategy** when a different model prompt or aggregation logic is required. Create a **new suite** when you want a different combination of strategies to run together (e.g., a lightweight suite for production and a heavier, experimental suite for offline analysis). A single suite can host many strategies as long as the dependency graph remains acyclic.
+
 ### Registry
-`suites` are imported via dotted paths in configuration. `backend/pipelines/experiments/registry.py` exposes `load_suites`, instantiating suites whether the attribute is an instance, subclass, or callable returning a suite.
+`backend/pipelines/experiments/registry.py` centralises configuration in code. `REGISTERED_SUITE_BUILDERS` is an ordered tuple of callables that each return a fresh `BaseExperimentSuite`. `load_suites(requested=None)` instantiates every builder and optionally filters by suite ID (used by the CLI's `--suite` flag). Adding or removing a suite is a matter of editing that tuple—no environment variables or stringly typed imports required.
+
+#### YAML format
+`backend/pipelines/experiments/configuration.py` parses suite definitions from YAML. The schema mirrors the in-code helpers:
+
+```yaml
+suites:
+  - suite_id: openai
+    version: "0.2"
+    description: Experimental OpenAI-backed research + forecast flow
+    research:
+      - target: pipelines.experiments.openai:OpenAIWebSearchResearch
+      - target: pipelines.experiments.openai:AtlasResearchSweep
+      - target: pipelines.experiments.openai:HorizonSignalTimeline
+    forecasts:
+      - target: pipelines.experiments.openai:GPT5ForecastStrategy
+```
+
+- Each `research` and `forecasts` entry may be a string (`module:Attribute`) or a mapping with optional `args`/`kwargs` fields that are forwarded when instantiating the strategy.
+- All research strategies listed run for every event. Forecast strategies run for the same events once their `requires` dependencies (strategy names) succeed. Missing dependencies raise an error during suite construction so misconfigurations are caught early.
+- To run multiple suites from one YAML file, append additional entries to the `suites` array. Use separate suites when you want to opt-in/out of different experiment bundles via CLI flags or environment variables.
+- YAML is intentionally optional. It cannot reuse helper functions, share partially applied strategies, or benefit from type checking. Use it sparingly for non-engineering stakeholders; the code-first registry keeps experiment wiring explicit and easier to refactor.
 
 ## Configuration
-`Settings.processing_experiment_suites` (and the `PROCESSING_EXPERIMENT_SUITES` env var) hold the list of suite paths. The legacy `processing_experiments` knob is deprecated and the loader now raises if it is used.
+Configuration lives in `pipelines/experiments/registry.py`. The tuple `REGISTERED_SUITE_BUILDERS` defines the suites that run for every pipeline invocation, and `load_suites()` materialises them on demand. CLI filters (`--suite`, `--include-*`, `--stage`) operate on the instantiated suite objects. The YAML loader remains for advanced scenarios, but prefer editing the registry directly for type-checked, discoverable configuration.
 
 ## Pipeline Flow (`backend/pipelines/daily_run.py`)
 1. Parse CLI args (window/target date, dry-run, limit, summary path, optional `--suite`, `--stage`, `--include-research`, `--include-forecast`).

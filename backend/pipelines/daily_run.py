@@ -582,10 +582,7 @@ def main() -> None:
     start_bound, end_bound = _day_bounds(target_date)
     filters = _build_filters(settings=settings, start=start_bound, end=end_bound)
 
-    suites = load_suites(settings.processing_experiment_suites)
-    if args.suite:
-        requested = {item.strip() for item in args.suite if item and item.strip()}
-        suites = [suite for suite in suites if suite.suite_id in requested]
+    suites = load_suites(args.suite)
     stage_selection = args.stage
     stage_map = {
         "research": {ExperimentStage.RESEARCH},
