@@ -7,12 +7,12 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, ContextManager, FrozenSet, Iterable, Sequence
 from uuid import uuid4
 
 from loguru import logger
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db import init_db
 from app.repositories.pipeline_models import (
     ExperimentResultInput,
@@ -258,6 +258,38 @@ def _parse_args() -> argparse.Namespace:
         help="Print the configured experiment manifest and exit",
     )
     return parser.parse_args()
+
+
+@dataclass(slots=True, frozen=True)
+class StageConfig:
+    active_stages: FrozenSet[ExperimentStage]
+    enabled_research: FrozenSet[str] | None
+    enabled_forecast: FrozenSet[str] | None
+
+
+def _resolve_stage_config(args: argparse.Namespace) -> StageConfig:
+    stage_map = {
+        "research": frozenset({ExperimentStage.RESEARCH}),
+        "forecast": frozenset({ExperimentStage.FORECAST}),
+        "both": frozenset({ExperimentStage.RESEARCH, ExperimentStage.FORECAST}),
+    }
+    active_stages = stage_map[args.stage]
+
+    enabled_research = _parse_variant_filter(args.include_research)
+    normalized_research: FrozenSet[str] | None = None
+    if enabled_research:
+        normalized_research = frozenset(enabled_research)
+
+    enabled_forecast = _parse_variant_filter(args.include_forecast)
+    normalized_forecast: FrozenSet[str] | None = None
+    if enabled_forecast:
+        normalized_forecast = frozenset(enabled_forecast)
+
+    return StageConfig(
+        active_stages=active_stages,
+        enabled_research=normalized_research,
+        enabled_forecast=normalized_forecast,
+    )
 
 
 def _resolve_dates(
@@ -630,53 +662,45 @@ def _run_suite_for_group(
 
 
 
-def _write_summary(path: Path, summary: PipelineSummary) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(summary.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def run_pipeline(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    suites: Sequence[BaseExperimentSuite] | None = None,
+    stage_config: StageConfig | None = None,
+    now: datetime | None = None,
+    client_factory: Callable[[], PolymarketClient] | None = None,
+    session_factory: Callable[[], ContextManager[Any]] | None = None,
+    init_db_fn: Callable[[], None] = init_db,
+    processing_repo_factory: Callable[[Any], ProcessingRepository] | None = None,
+    market_repo_factory: Callable[[Any], MarketRepository] | None = None,
+) -> PipelineSummary:
+    suites = tuple(suites) if suites is not None else tuple(load_suites(args.suite))
+    stage_config = stage_config or _resolve_stage_config(args)
 
+    active_stages = set(stage_config.active_stages)
+    enabled_research = (
+        set(stage_config.enabled_research) if stage_config.enabled_research else None
+    )
+    enabled_forecast = (
+        set(stage_config.enabled_forecast) if stage_config.enabled_forecast else None
+    )
 
-def main() -> None:
-    args = _parse_args()
-    settings = get_settings()
-    suites = load_suites(args.suite)
+    if session_factory is None:
+        init_db_fn()
+        session_factory = session_scope
 
-    stage_selection = args.stage
-    stage_map = {
-        "research": {ExperimentStage.RESEARCH},
-        "forecast": {ExperimentStage.FORECAST},
-        "both": {ExperimentStage.RESEARCH, ExperimentStage.FORECAST},
-    }
-    active_stages = stage_map[stage_selection]
+    processing_repo_factory = processing_repo_factory or (
+        lambda session: ProcessingRepository(session)
+    )
+    market_repo_factory = market_repo_factory or (lambda session: MarketRepository(session))
 
-    enabled_research = _parse_variant_filter(args.include_research)
-    if not enabled_research:
-        enabled_research = None
-    enabled_forecast = _parse_variant_filter(args.include_forecast)
-    if not enabled_forecast:
-        enabled_forecast = None
-
-    if args.list_experiments:
-        manifest = build_manifest(
-            suites,
-            active_stages=active_stages,
-            enabled_research=enabled_research,
-            enabled_forecast=enabled_forecast,
-        )
-        manifest["configuration"] = {
-            "stage": stage_selection,
-            "suite_filter": list(args.suite or []),
-            "include_research": sorted(enabled_research) if enabled_research else None,
-            "include_forecast": sorted(enabled_forecast) if enabled_forecast else None,
-        }
-        print(json.dumps(manifest, indent=2, sort_keys=True))
-        return
-
-    init_db()
-
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     run_date = now.date()
     window_days, target_date = _resolve_dates(
-        run_date=run_date, window_days=args.window_days, target_date_override=args.target_date
+        run_date=run_date,
+        window_days=args.window_days,
+        target_date_override=args.target_date,
     )
 
     start_bound, end_bound = _day_bounds(target_date)
@@ -706,9 +730,9 @@ def main() -> None:
         args.dry_run,
     )
 
-    with session_scope() as session:
-        processing_repo = ProcessingRepository(session)
-        market_repo = MarketRepository(session)
+    with session_factory() as session:
+        processing_repo = processing_repo_factory(session)
+        market_repo = market_repo_factory(session)
 
         pipeline_context = PipelineContext(
             run_id=run_id,
@@ -746,7 +770,15 @@ def main() -> None:
                     description=meta.description,
                 )
 
-        client = PolymarketClient(page_size=settings.ingestion_page_size, filters=filters)
+        if client_factory is None:
+            def _default_client_factory() -> PolymarketClient:
+                return PolymarketClient(
+                    page_size=settings.ingestion_page_size, filters=filters
+                )
+
+            client_factory = _default_client_factory
+
+        client = client_factory()
 
         try:
             grouped_markets: dict[str, EventBucket] = {}
@@ -771,7 +803,8 @@ def main() -> None:
                         }
                     )
                     logger.exception(
-                        "Normalization failed for market payload {}", raw_market.get("id", "unknown")
+                        "Normalization failed for market payload {}",
+                        raw_market.get("id", "unknown"),
                     )
                     if not args.dry_run:
                         processing_repo.record_processing_failure(
@@ -918,7 +951,6 @@ def main() -> None:
 
                     market_repo.upsert_market(market)
 
-                # Persist research artifacts and stage results
                 for suite_id, records in suite_research_records.items():
                     for variant_name, record in records.items():
                         payload = _enrich_payload(
@@ -966,7 +998,9 @@ def main() -> None:
                     primary_artifact_id = None
                     if len(dependencies) == 1:
                         primary_artifact_id = next(iter(dependencies.values()))
-                    processed_market_id = market_to_processed.get(forecast_record.output.market_id)
+                    processed_market_id = market_to_processed.get(
+                        forecast_record.output.market_id
+                    )
                     if not processed_market_id:
                         logger.warning(
                             "Missing processed market mapping for forecast market {} -- skipping result",
@@ -993,14 +1027,17 @@ def main() -> None:
                     )
 
         finally:
-            client.close()
+            if hasattr(client, "close"):
+                client.close()
 
         finished_at = datetime.now(timezone.utc)
 
         if not args.dry_run and processing_run is not None:
             processing_repo.finalize_processing_run(
                 processing_run,
-                status="completed" if summary.failed_markets == 0 else "completed_with_errors",
+                status="completed"
+                if summary.failed_markets == 0
+                else "completed_with_errors",
                 total_markets=summary.total_markets,
                 processed_markets=summary.processed_markets,
                 failed_markets=summary.failed_markets,
@@ -1021,7 +1058,9 @@ def main() -> None:
                         status=status,
                         started_at=meta.started_at,
                         finished_at=meta.finished_at,
-                        error_message="; ".join(meta.error_messages) if meta.error_messages else None,
+                        error_message="; ".join(meta.error_messages)
+                        if meta.error_messages
+                        else None,
                     ),
                     description=meta.description,
                 )
@@ -1045,6 +1084,54 @@ def main() -> None:
         logger.warning(
             "Pipeline completed with {} failures", summary.failed_markets,
         )
+
+    return summary
+
+
+def _write_summary(path: Path, summary: PipelineSummary) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(summary.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def main() -> None:
+    args = _parse_args()
+    settings = get_settings()
+    suites = tuple(load_suites(args.suite))
+    stage_config = _resolve_stage_config(args)
+
+    if args.list_experiments:
+        manifest = build_manifest(
+            suites,
+            active_stages=set(stage_config.active_stages),
+            enabled_research=set(stage_config.enabled_research)
+            if stage_config.enabled_research
+            else None,
+            enabled_forecast=set(stage_config.enabled_forecast)
+            if stage_config.enabled_forecast
+            else None,
+        )
+        manifest["configuration"] = {
+            "stage": args.stage,
+            "suite_filter": list(args.suite or []),
+            "include_research": sorted(stage_config.enabled_research)
+            if stage_config.enabled_research
+            else None,
+            "include_forecast": sorted(stage_config.enabled_forecast)
+            if stage_config.enabled_forecast
+            else None,
+        }
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return
+
+    run_pipeline(
+        args,
+        settings,
+        suites=suites,
+        stage_config=stage_config,
+    )
 
 
 if __name__ == "__main__":
