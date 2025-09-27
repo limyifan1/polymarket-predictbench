@@ -14,6 +14,7 @@ class OpenAIWebSearchResearch(StructuredLLMResearchStrategy):
 
     name = "openai_web_search"
     version = "0.2"
+    shared_identity = "catalog:openai_web_search:v0.2"
     description = "High-signal synthesis grounded in recent web results"
     system_message = (
         "You are an analyst producing structured intelligence summaries for prediction markets. "
