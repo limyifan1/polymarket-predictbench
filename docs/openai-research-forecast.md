@@ -1,5 +1,10 @@
 # OpenAI-Powered Research & Forecast Flow
 
+> **Provider note:** The experiment framework now routes through a pluggable LLM provider
+> registry. The strategies described here default to the OpenAI provider but can be executed
+> against Gemini by setting `provider: gemini` (and disabling tool usage) via
+> `experiment_config` overrides.
+
 ## Goals
 - Add an automated research stage that can search the web for credible, up-to-date context about each Polymarket event.
 - Feed the synthesized research into a lightweight forecasting stage that produces calibrated probability estimates using GPT‑5.

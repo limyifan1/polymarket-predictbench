@@ -17,7 +17,7 @@ from ..base import (
     ResearchOutput,
 )
 from ...context import PipelineContext
-from ..llm_support import extract_json, json_mode_kwargs, resolve_llm_request, usage_dict
+from ..llm_support import resolve_llm_request
 from ..openai.base import _format_market, _strategy_stage_name
 
 
@@ -209,23 +209,23 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
 
             schema_name, schema = _forecast_schema(market)
             request_kwargs = runtime.merge_options(
-                json_mode_kwargs(runtime.client, schema_name=schema_name, schema=schema)
+                runtime.json_mode_kwargs(schema_name=schema_name, schema=schema)
             )
             try:
-                response = runtime.client.responses.create(
-                    model=runtime.model,
-                    input=self.build_messages(
+                response = runtime.invoke(
+                    messages=self.build_messages(
                         market=market,
                         briefing_payload=briefing_payload,
                         supplemental_research=supplemental,
                     ),
-                    **request_kwargs,
+                    options=request_kwargs,
+                    tools=runtime.tools,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Superforecaster forecast request failed")
                 raise ExperimentExecutionError(str(exc)) from exc
 
-            payload = extract_json(response)
+            payload = runtime.extract_json(response)
             outcomes_payload = payload.get("outcomes", {})
             raw_probabilities: dict[str, float | None] = {}
             rationales: list[str] = []
@@ -271,7 +271,7 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             reasoning = "\n\n".join(reasoning_sections) or "Superforecaster-calibrated forecast."
 
             diagnostics = runtime.diagnostics(
-                usage=usage_dict(response),
+                usage=runtime.usage_dict(response),
                 extra={
                     "confidence": payload.get("confidence"),
                     "raw_probabilities": raw_probabilities,

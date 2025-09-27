@@ -11,7 +11,6 @@ from app.domain.models import NormalizedEvent, NormalizedMarket
 from ..base import (
     EventMarketGroup,
     ExperimentExecutionError,
-    ExperimentSkip,
     ForecastOutput,
     ForecastStrategy,
     ResearchOutput,
@@ -20,12 +19,9 @@ from ..base import (
 from ...context import PipelineContext
 from ..llm_support import (
     LLMRequestSpec,
-    extract_json,
     hash_payload,
     iso_timestamp,
-    json_mode_kwargs,
     resolve_llm_request,
-    usage_dict,
 )
 
 
@@ -96,7 +92,7 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
     system_message: str = ""
     default_model: str | None = None
     fallback_settings_attr: str | None = "openai_research_model"
-    default_tools: tuple[Mapping[str, Any], ...] | None = ({"type": "web_search"},)
+    default_tools: tuple[Mapping[str, Any], ...] | None = None
     default_request_options: Mapping[str, Any] | None = None
     require_api_key: bool = True
     error_label: str = "LLM research request failed"
@@ -185,33 +181,35 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
 
         schema_name, schema = self.build_schema(group, context=context, runtime=runtime)
         request_kwargs = runtime.merge_options(
-            json_mode_kwargs(runtime.client, schema_name=schema_name, schema=schema)
+            runtime.json_mode_kwargs(schema_name=schema_name, schema=schema)
         )
 
-        tools_payload = runtime.tools or self.default_tools
-        payload = {
-            "model": runtime.model,
-            "input": [
-                {"role": "system", "content": self.system_prompt(group=group, context=context, runtime=runtime)},
-                {"role": "user", "content": self.build_user_prompt(group, context=context, runtime=runtime)},
-            ],
-        }
-        payload.update(request_kwargs)
+        messages = [
+            {
+                "role": "system",
+                "content": self.system_prompt(group=group, context=context, runtime=runtime),
+            },
+            {
+                "role": "user",
+                "content": self.build_user_prompt(group, context=context, runtime=runtime),
+            },
+        ]
+        options = dict(request_kwargs)
         extra_options = self.extra_request_options(group, context=context, runtime=runtime)
         if extra_options:
-            payload.update(extra_options)
+            options.update(extra_options)
 
         try:
-            if tools_payload is not None:
-                payload["tools"] = tools_payload
-            response = runtime.client.responses.create(**payload)
-        except ExperimentSkip:
-            raise
+            response = runtime.invoke(
+                messages=messages,
+                options=options,
+                tools=runtime.tools,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(self.error_label)
             raise ExperimentExecutionError(str(exc)) from exc
 
-        artifact = extract_json(response)
+        artifact = runtime.extract_json(response)
         artifact = self.postprocess_payload(
             artifact,
             group=group,
@@ -220,7 +218,7 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
             response=response,
         )
         diagnostics = runtime.diagnostics(
-            usage=usage_dict(response),
+            usage=runtime.usage_dict(response),
             extra=self.extra_diagnostics(
                 group=group,
                 context=context,
