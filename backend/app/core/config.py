@@ -86,6 +86,10 @@ class Settings(BaseSettings):
         default="../debug_dumps",
         description="Default directory where pipeline debug dumps are written (set blank to disable)",
     )
+    llm_default_provider: str = Field(
+        default="openai",
+        description="Fallback provider used when strategies do not override the provider name",
+    )
     openai_api_key: str | None = Field(
         default=None,
         description="API key used for OpenAI-powered research and forecasting",
@@ -102,13 +106,9 @@ class Settings(BaseSettings):
         default=None,
         description="Optional OpenAI project identifier for usage scoping",
     )
-    openai_research_model: str = Field(
-        default="gpt-4.1-mini",
-        description="Model used for the research stage when calling OpenAI",
-    )
-    openai_forecast_model: str = Field(
-        default="gpt-5",
-        description="Model used for the forecast stage when calling OpenAI",
+    gemini_api_key: str | None = Field(
+        default=None,
+        description="API key used for Gemini-powered research and forecasting",
     )
 
     @field_validator("pipeline_run_time_utc")

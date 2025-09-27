@@ -17,8 +17,8 @@ from ..base import (
     ResearchOutput,
 )
 from ...context import PipelineContext
-from ..llm_support import extract_json, json_mode_kwargs, resolve_llm_request, usage_dict
-from ..openai.base import _format_market, _strategy_stage_name
+from ..llm_support import resolve_llm_request
+from ..openai.base import DEFAULT_FORECAST_MODEL, _format_market, _strategy_stage_name
 
 
 def _forecast_schema(market: NormalizedMarket) -> tuple[str, dict[str, Any]]:
@@ -116,18 +116,18 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
         "atlas_research_sweep",
         "horizon_signal_timeline",
     )
-    default_model: str | None = None
-    fallback_settings_attr: str | None = "openai_forecast_model"
+    default_model: str | None = DEFAULT_FORECAST_MODEL
     default_request_options: Mapping[str, Any] | None = None
     require_api_key: bool = True
     model_weight: float = 0.6
     base_rate_weight: float = 0.4
 
-    def _fallback_model(self, context: PipelineContext) -> str | None:
-        if self.default_model:
-            return self.default_model
-        if self.fallback_settings_attr:
-            return getattr(context.settings, self.fallback_settings_attr, None)
+    def resolve_default_model(self, context: PipelineContext) -> str | None:
+        del context
+        return self.default_model
+
+    def resolve_fallback_model(self, context: PipelineContext) -> str | None:
+        del context
         return None
 
     def build_messages(
@@ -192,8 +192,8 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             self,
             context,
             stage=stage_name,
-            default_model=self.default_model,
-            fallback_model=self._fallback_model(context),
+            default_model=self.resolve_default_model(context),
+            fallback_model=self.resolve_fallback_model(context),
             default_tools=None,
             default_request_options=self.default_request_options,
             require_api_key=self.require_api_key,
@@ -209,23 +209,23 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
 
             schema_name, schema = _forecast_schema(market)
             request_kwargs = runtime.merge_options(
-                json_mode_kwargs(runtime.client, schema_name=schema_name, schema=schema)
+                runtime.json_mode_kwargs(schema_name=schema_name, schema=schema)
             )
             try:
-                response = runtime.client.responses.create(
-                    model=runtime.model,
-                    input=self.build_messages(
+                response = runtime.invoke(
+                    messages=self.build_messages(
                         market=market,
                         briefing_payload=briefing_payload,
                         supplemental_research=supplemental,
                     ),
-                    **request_kwargs,
+                    options=request_kwargs,
+                    tools=runtime.tools,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Superforecaster forecast request failed")
                 raise ExperimentExecutionError(str(exc)) from exc
 
-            payload = extract_json(response)
+            payload = runtime.extract_json(response)
             outcomes_payload = payload.get("outcomes", {})
             raw_probabilities: dict[str, float | None] = {}
             rationales: list[str] = []
@@ -271,7 +271,7 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             reasoning = "\n\n".join(reasoning_sections) or "Superforecaster-calibrated forecast."
 
             diagnostics = runtime.diagnostics(
-                usage=usage_dict(response),
+                usage=runtime.usage_dict(response),
                 extra={
                     "confidence": payload.get("confidence"),
                     "raw_probabilities": raw_probabilities,

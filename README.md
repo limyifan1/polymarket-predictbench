@@ -64,6 +64,24 @@ curl "http://localhost:8000/healthz"
 cd ../frontend && npm run lint
 ```
 
+### LLM provider configuration
+
+The experiment pipeline now supports multiple LLM vendors through a provider registry. Set
+`LLM_DEFAULT_PROVIDER` in `.env` to control the fallback provider used when suites do not
+override `provider` explicitly. Two providers ship out of the box:
+
+- **OpenAI** (default). Requires `OPENAI_API_KEY` plus the optional override fields already
+  documented. Strategy classes declare their preferred models in code (e.g. `gpt-4.1-mini`
+  for research, `gpt-5` for forecasts) and you can override them per experiment through
+  `experiment_config`.
+- **Gemini**. Configure `GEMINI_API_KEY`. The adapter defaults to `gemini-1.5-flash` for
+  research-style prompts and `gemini-1.5-pro` for forecasts, with the same per-experiment
+  override hook. It focuses on structured JSON responses and does not enable Google Search
+  tools by default—disable tool usage in strategy overrides when selecting Gemini.
+
+Strategies can continue to supply per-experiment overrides via `experiment_config`. Provider
+selection cascades: experiment override → strategy default → `LLM_DEFAULT_PROVIDER`.
+
 ### Pipeline Deep Dive
 
 The ingestion + processing pipeline lives under `backend/pipelines/daily_run.py`. It fetches markets closing within a configurable horizon (default seven days ahead), groups them by event, runs the registered experiment suites, persists successful results, and records structured run metadata. See [`docs/polymarket-open-markets.md`](docs/polymarket-open-markets.md) for a full walkthrough of each stage.

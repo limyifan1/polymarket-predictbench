@@ -10,11 +10,11 @@ from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable, Mapping, Sequence
 
-from app.core.config import Settings
-from app.services.openai_client import get_openai_client
+from app.services.llm import get_provider
+from app.services.llm.base import LLMProvider
 
 from ..context import PipelineContext
-from .base import ExperimentExecutionError, ExperimentSkip
+from .base import ExperimentExecutionError
 
 
 @dataclass(slots=True)
@@ -24,6 +24,7 @@ class LLMRequestSpec:
     client: Any
     model: str
     provider: str
+    provider_impl: LLMProvider
     request_options: dict[str, Any] = field(default_factory=dict)
     tools: tuple[Mapping[str, Any], ...] | None = None
     overrides: Mapping[str, Any] = field(default_factory=dict)
@@ -60,6 +61,38 @@ class LLMRequestSpec:
         if extra:
             payload.update(extra)
         return payload
+
+    def json_mode_kwargs(
+        self,
+        *,
+        schema_name: str,
+        schema: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        return self.provider_impl.json_mode_kwargs(
+            self.client,
+            schema_name=schema_name,
+            schema=schema,
+        )
+
+    def invoke(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        options: Mapping[str, Any] | None = None,
+        tools: Sequence[Mapping[str, Any]] | None = None,
+    ) -> Any:
+        return self.provider_impl.invoke(
+            self,
+            messages=messages,
+            options=options,
+            tools=tools,
+        )
+
+    def extract_json(self, response: Any) -> Mapping[str, Any]:
+        return self.provider_impl.extract_json(response)
+
+    def usage_dict(self, response: Any) -> Mapping[str, Any] | None:
+        return self.provider_impl.usage_dict(response)
 
 
 def _import_callable(path: str):
@@ -98,32 +131,11 @@ def _invoke_factory(
         ) from exc
 
 
-def _ensure_provider_ready(
-    *,
-    settings: Settings,
-    overrides: Mapping[str, Any],
-    provider: str,
-    require_api_key: bool,
-    experiment_name: str,
-) -> None:
-    if not require_api_key:
-        return
-    if provider != "openai":
-        return
-    if overrides.get("skip_openai_api_key_check") or overrides.get("api_key"):
-        return
-    if not settings.openai_api_key:
-        raise ExperimentSkip(
-            f"OPENAI_API_KEY is not configured; skipping experiment '{experiment_name}'"
-        )
-
-
 def _resolve_client(
     *,
-    provider: str,
+    provider: LLMProvider,
     overrides: Mapping[str, Any],
     context: PipelineContext,
-    experiment_name: str,
     default_client_factory: Callable[[PipelineContext, Mapping[str, Any]], Any] | None,
 ) -> Any:
     if overrides.get("client") is not None:
@@ -137,27 +149,24 @@ def _resolve_client(
     if default_client_factory is not None:
         return default_client_factory(context, overrides)
 
-    if provider != "openai":
-        raise ExperimentExecutionError(
-            f"Experiment '{experiment_name}' specifies provider '{provider}' but no client_factory override"
-        )
-
-    return get_openai_client(context.settings)
+    return provider.build_client(context=context, overrides=overrides)
 
 
 def _resolve_model(
     *,
     stage: str,
-    provider: str,
+    provider_name: str,
+    provider: LLMProvider,
     overrides: Mapping[str, Any],
     default_model: str | None,
     fallback_model: str | None,
     experiment_name: str,
+    context: PipelineContext,
 ) -> str:
     candidate_keys: list[str] = []
     if stage:
         candidate_keys.append(f"{stage}_model")
-    candidate_keys.extend(["model", f"{provider}_model", "llm_model", "openai_model"])
+    candidate_keys.extend(["model", f"{provider_name}_model", "llm_model", "openai_model"])
     for key in candidate_keys:
         value = overrides.get(key)
         if isinstance(value, str) and value.strip():
@@ -166,6 +175,9 @@ def _resolve_model(
         return default_model
     if fallback_model:
         return fallback_model
+    provider_default = provider.default_model(stage, context=context)
+    if provider_default:
+        return provider_default
     raise ExperimentExecutionError(
         f"No model configured for experiment '{experiment_name}'. Provide an override or fallback model."
     )
@@ -175,9 +187,16 @@ def _merge_request_options(
     *,
     stage: str,
     overrides: Mapping[str, Any],
+    provider: LLMProvider,
+    context: PipelineContext,
     default_request_options: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    merged: dict[str, Any] = dict(default_request_options or {})
+    merged: dict[str, Any] = {}
+    provider_defaults = provider.default_request_options(stage, context=context)
+    if provider_defaults:
+        merged.update(provider_defaults)
+    if default_request_options:
+        merged.update(default_request_options)
     stage_key = f"{stage}_request_options"
     stage_options = overrides.get(stage_key)
     if isinstance(stage_options, Mapping):
@@ -192,6 +211,8 @@ def _resolve_tools(
     *,
     stage: str,
     overrides: Mapping[str, Any],
+    provider: LLMProvider,
+    context: PipelineContext,
     default_tools: Sequence[Mapping[str, Any]] | None,
 ) -> tuple[Mapping[str, Any], ...] | None:
     stage_key = f"{stage}_tools"
@@ -199,9 +220,12 @@ def _resolve_tools(
         value = overrides.get(key)
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
             return tuple(value)  # type: ignore[arg-type]
-    if default_tools is None:
+    if default_tools is not None:
+        return tuple(default_tools)
+    provider_tools = provider.default_tools(stage, context=context)
+    if provider_tools is None:
         return None
-    return tuple(default_tools)
+    return tuple(provider_tools)
 
 
 def resolve_llm_request(
@@ -214,117 +238,66 @@ def resolve_llm_request(
     default_tools: Sequence[Mapping[str, Any]] | None = None,
     default_request_options: Mapping[str, Any] | None = None,
     require_api_key: bool = True,
-    default_provider: str = "openai",
+    default_provider: str | None = None,
     default_client_factory: Callable[[PipelineContext, Mapping[str, Any]], Any] | None = None,
 ) -> LLMRequestSpec:
     """Resolve runtime inputs for an LLM-backed strategy invocation."""
 
     experiment_name = getattr(strategy, "_experiment_name", getattr(strategy, "name", "unknown"))
     overrides = context.settings.experiment_config(experiment_name)
-    provider = str(overrides.get("provider", default_provider)).lower()
-
-    _ensure_provider_ready(
-        settings=context.settings,
-        overrides=overrides,
-        provider=provider,
-        require_api_key=require_api_key,
-        experiment_name=experiment_name,
-    )
+    provider_name = str(
+        overrides.get("provider")
+        or default_provider
+        or getattr(context.settings, "llm_default_provider", "openai")
+    ).lower()
+    provider_impl = get_provider(provider_name)
+    if require_api_key:
+        provider_impl.ensure_ready(
+            context=context,
+            overrides=overrides,
+            experiment_name=experiment_name,
+        )
 
     client = _resolve_client(
-        provider=provider,
+        provider=provider_impl,
         overrides=overrides,
         context=context,
-        experiment_name=experiment_name,
         default_client_factory=default_client_factory,
     )
     model = _resolve_model(
         stage=stage,
-        provider=provider,
+        provider_name=provider_name,
+        provider=provider_impl,
         overrides=overrides,
         default_model=default_model,
         fallback_model=fallback_model,
         experiment_name=experiment_name,
+        context=context,
     )
     request_options = _merge_request_options(
         stage=stage,
         overrides=overrides,
+        provider=provider_impl,
+        context=context,
         default_request_options=default_request_options,
     )
-    tools = _resolve_tools(stage=stage, overrides=overrides, default_tools=default_tools)
+    tools = _resolve_tools(
+        stage=stage,
+        overrides=overrides,
+        provider=provider_impl,
+        context=context,
+        default_tools=default_tools,
+    )
 
     return LLMRequestSpec(
         client=client,
         model=model,
-        provider=provider,
+        provider=provider_name,
+        provider_impl=provider_impl,
         request_options=request_options,
         tools=tools,
         overrides=overrides,
     )
-
-
-def supports_text_config(responses_cls: type[Any]) -> bool:
-    signature = inspect.signature(responses_cls.create)
-    return "text" in signature.parameters
-
-
-def json_mode_kwargs(
-    client: Any,
-    *,
-    schema_name: str,
-    schema: dict[str, Any],
-) -> dict[str, Any]:
-    structured = {
-        "type": "json_schema",
-        "name": schema_name,
-        "schema": schema,
-    }
-    responses_cls = type(getattr(client, "responses"))
-    if supports_text_config(responses_cls):
-        return {"text": {"format": structured}}
-    return {"response_format": structured}
-
-
-def extract_json(response) -> dict[str, Any]:
-    """Best-effort extraction of JSON payload from a Responses API result."""
-
-    text_candidate: str | None = None
-    output_text = getattr(response, "output_text", None)
-    if isinstance(output_text, str) and output_text.strip():
-        text_candidate = output_text
-    if text_candidate is None:
-        dump: dict[str, Any] = (
-            response.model_dump() if hasattr(response, "model_dump") else dict(response)  # type: ignore[arg-type]
-        )
-        for item in dump.get("output", []):
-            for content in item.get("content", []):
-                if isinstance(content, dict):
-                    text = content.get("text") or content.get("output_text")
-                    if isinstance(text, str) and text.strip():
-                        text_candidate = text
-                        break
-            if text_candidate:
-                break
-    if not text_candidate:
-        raise ExperimentExecutionError("LLM response did not include a JSON payload")
-    try:
-        return json.loads(text_candidate)
-    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-        raise ExperimentExecutionError("Failed to decode JSON payload from LLM response") from exc
-
-
-def usage_dict(response) -> dict[str, Any] | None:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return None
-    if hasattr(usage, "model_dump"):
-        return usage.model_dump()
-    try:
-        return dict(usage)  # type: ignore[arg-type]
-    except Exception:  # noqa: BLE001
-        return {"raw": str(usage)}
-
-
 def hash_payload(payload: Mapping[str, Any] | None) -> str | None:
     if not payload:
         return None
@@ -340,11 +313,7 @@ def iso_timestamp() -> str:
 
 __all__ = [
     "LLMRequestSpec",
-    "extract_json",
     "hash_payload",
     "iso_timestamp",
-    "json_mode_kwargs",
     "resolve_llm_request",
-    "supports_text_config",
-    "usage_dict",
 ]
