@@ -2,6 +2,22 @@
 
 This document describes the ingestion + processing pipeline, the experiment framework, and how results are persisted.
 
+## Quickstart Runbook
+
+### Local workflows
+- `uv run python -m pipelines.daily_run --list-experiments` — print the suite/variant manifest respecting any CLI filters so you can confirm what will run before touching the database.
+- `uv run python -m pipelines.daily_run --dry-run --limit 5` — fetch a handful of upcoming markets, execute experiments, and review the summary without writing to the database.
+- `uv run python -m pipelines.daily_run --suite <id> --stage research --debug-dump-dir ../debug-dumps` — focus on specific suites/stages while capturing JSON payloads for debugging.
+- `uv run python -m pipelines.daily_run --summary-path ../summary.json` — persist a machine-readable artifact with counts, failures, and suite stats for regression tracking.
+- `uv run uvicorn app.main:app --reload --port 8000` + `npm run dev` in `frontend/` — run the API and dashboard together to visually inspect processed events.
+
+### GitHub Actions daily automation
+- Scheduled run at 07:00 UTC plus manual dispatch with `window_days`, `target_date`, and `dry_run` overrides.
+- Secrets required: `SUPABASE_DB_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and optionally `OPENAI_API_KEY`. Repository variables `INGESTION_FILTERS` / `INGESTION_PAGE_SIZE` keep pagination consistent.
+- Output: `artifacts/pipeline-summary.json` containing run metadata, suite stats, and failure reasons.
+- To tweak the behaviour, edit `.github/workflows/daily-pipeline.yml` (cron schedule, CLI args) or adjust repository secrets/variables.
+- Reproduce GitHub Actions locally by running the same CLI command with `ENVIRONMENT=production` and Supabase credentials exported.
+
 ## 1. Objectives
 - Run the Polymarket processing pipeline once per day at a predictable UTC time via GitHub Actions, with manual reruns when needed.
 - Collect markets that close within a configurable window (default seven days ahead) and skip everything else.
@@ -51,7 +67,9 @@ pipelines.daily_run (CLI)
   - `--stage {research,forecast,both}`: execute only the selected stages (default `both`).
   - `--include-research` / `--include-forecast`: comma-separated variant names (or `suite_id:variant`) to run.
   - `--debug-dump-dir <path>`: write per-event JSON dumps of research/forecast payloads (defaults to `PIPELINE_DEBUG_DUMP_DIR`); pass `--no-debug-dump` to skip.
+  - `--list-experiments`: print the configured suite manifest (respecting `--suite`, `--stage`, and include filters) as JSON and exit without touching the database.
 - The CLI resolves start/end bounds for the target day in UTC (`00:00:00` inclusive to the next day's midnight exclusive) and injects them into the Polymarket filters.
+- Summary artifacts now include a `suite_stats` map that records completed/skipped/failed counts per suite + stage so ablation runs can confirm which variants executed.
 - Suites are instantiated before ingestion. If no suites are configured the CLI aborts early so we never persist half-baked runs.
 - Markets are bucketed by event before suites execute. Failures at either stage mark every market in that bucket and produce shared processed-event metadata for the API.
 - When writes are enabled, the CLI records:
