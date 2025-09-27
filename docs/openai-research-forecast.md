@@ -25,9 +25,37 @@
    - Accepts JSON schema that enumerates each contract slug/name and collects `probability` + `rationale`.
    - Returns a `ForecastOutput` per market, mapping outcomes to probabilities (0–1) and capturing the reasoning string.
 
-3. **Suite wiring** (`OpenAIResearchForecastSuite`)
-   - Expose both strategies behind a single experiment suite so the pipeline can enable it via `PROCESSING_EXPERIMENT_SUITES`.
-   - Keep the suite opt-in (do not replace baseline) while the approach is validated.
+3. **Suite wiring** (`build_openai_suite`)
+   - Expose both strategies behind a single experiment suite registered in `backend/pipelines/experiments/registry.py`.
+   - Suite composition lives in `backend/pipelines/experiments/openai/suite.py`, which exports `build_openai_suite()`. Add the builder to `REGISTERED_SUITE_BUILDERS` so the pipeline picks it up automatically.
+   - The suite can also be instantiated inline using the `suite(...)` helper:
+
+     ```python
+     from pipelines.experiments.openai import (
+         AtlasResearchSweep,
+         GPT5ForecastStrategy,
+         HorizonSignalTimeline,
+         OpenAIWebSearchResearch,
+     )
+     from pipelines.experiments.suites import strategy, suite
+
+     OPENAI_SUITE = suite(
+         "openai",
+         version="0.2",
+         description="Experimental OpenAI-backed research + forecast flow",
+         research=[
+             strategy(OpenAIWebSearchResearch),
+             strategy(AtlasResearchSweep),
+             strategy(HorizonSignalTimeline),
+         ],
+         forecasts=[strategy(GPT5ForecastStrategy)],
+     )
+     ```
+
+   - Every research variant listed runs for each event. `GPT5ForecastStrategy` declares `requires=("openai_web_search",)`, so it
+     executes only when the web-search research succeeds. Additional forecasts can reuse the same artifact by listing the same
+     dependency name.
+   - Keep the suite opt-in (do not replace baseline) while the approach is validated. YAML remains available via `pipelines.experiments.configuration.load_yaml_suites`, but it duplicates the Python definition and is best reserved for no-code overrides.
 
 ## Request Patterns
 - **Research Prompt Skeleton**

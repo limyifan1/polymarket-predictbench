@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-from .base import EventMarketGroup, ForecastOutput, ForecastStrategy, ResearchOutput
 from ..context import PipelineContext
-from .suites import BaseExperimentSuite
+from .base import EventMarketGroup, ForecastOutput, ForecastStrategy, ResearchOutput
+from .suites import DeclarativeExperimentSuite, strategy
 
 
 @dataclass(slots=True)
@@ -41,19 +41,15 @@ class BaselineSnapshotForecast(ForecastStrategy):
         return outputs
 
 
-class BaselineSnapshotSuite(BaseExperimentSuite):
+class BaselineSnapshotSuite(DeclarativeExperimentSuite):
     """Default suite providing baseline snapshot persistence."""
 
     suite_id = "baseline"
     version = "1.0"
     description = "Persist normalized market snapshots without additional research."
 
-    def _build_research_strategies(self):  # noqa: D401
-        # Baseline suite does not require research stage.
-        return ()
-
-    def _build_forecast_strategies(self):  # noqa: D401
-        return (BaselineSnapshotForecast(),)
+    research_factories = ()
+    forecast_factories = (strategy(BaselineSnapshotForecast),)
 
 
 __all__ = ["BaselineSnapshotSuite", "BaselineSnapshotForecast"]

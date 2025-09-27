@@ -1,7 +1,7 @@
 # Research Strategy Refactor Plan
 
 ## Current State Assessment
-- `backend/pipelines/experiments/openai.py` bundles request plumbing, prompt design, schema configuration, and diagnostics into one file. The helper functions are ad-hoc and tightly couple OpenAI specifics with strategy logic.
+- Historically `backend/pipelines/experiments/openai.py` bundled request plumbing, prompt design, schema configuration, and diagnostics into one file. The new package layout (`backend/pipelines/experiments/openai/`) splits shared helpers, research strategies, forecasts, and suite wiring into focused modules to keep OpenAI-specific concerns isolated.
 - Strategy overrides are dictionaries pulled from `Settings.experiment_config`, but the merge logic is repeated for every strategy and assumes OpenAI without a clean abstraction for alternate providers.
 - Research variants duplicate request construction (building messages, wiring JSON schemas, handling tools, etc.), making it hard to add or modify strategies without copy/paste.
 - Forecasting and research stages do not share a consistent runtime contract; diagnostics, hash computation, and JSON extraction are scattered.
@@ -38,5 +38,5 @@
    - Refactor helpers first, then migrate strategies one by one to confirm compatibility, concluding with forecast strategy alignment and suite wiring.
 
 ## Outcome
-- Strategies become declarative, plumbing lives in a single helper module, and the system can host additional providers or personas with minimal boilerplate.
+- Strategies become declarative, plumbing lives in a single helper module, and the system can host additional providers or personas with minimal boilerplate. Suites can be assembled either by subclassing `DeclarativeExperimentSuite` or by using the `suite(...)` helper so configuration remains ergonomic.
 - Documentation and code structure now make the pipeline easier to reason about, review, and extend.

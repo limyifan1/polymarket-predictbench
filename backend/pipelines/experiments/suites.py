@@ -1,11 +1,79 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Callable, Generic, Sequence, TypeVar
 
 from app.models import ExperimentStage
 
 from .base import ForecastStrategy, ResearchStrategy, StrategyDescriptor
+
+
+_StrategyT = TypeVar("_StrategyT")
+
+
+@dataclass(slots=True)
+class StrategyFactory(Generic[_StrategyT]):
+    """Lightweight callable wrapper that normalises strategy builders."""
+
+    builder: Callable[[], _StrategyT]
+
+    def __call__(self) -> _StrategyT:
+        strategy = self.builder()
+        if not _is_strategy_instance(strategy):
+            msg = (
+                "Strategy factory produced an object without a 'run' method: "
+                f"{strategy!r}"
+            )
+            raise TypeError(msg)
+        return strategy
+
+
+def _is_strategy_instance(candidate: Any) -> bool:
+    """Return True when the candidate looks like a strategy instance."""
+
+    return hasattr(candidate, "run") and not isinstance(candidate, type)
+
+
+def strategy(
+    target: Any,
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> StrategyFactory[Any]:
+    """Return a factory that instantiates strategy instances on demand.
+
+    Accepts a strategy instance, class, or callable. Optional ``*args`` / ``**kwargs``
+    are forwarded when a callable/class is provided. This keeps suite definitions
+    declarative and compact:
+
+    ``strategy(MyStrategy, temperature=0.7)``
+    ``strategy(lambda: CustomStrategy(config))``
+
+    Providing an already-instantiated strategy forbids args/kwargs to avoid
+    accidental reuse of partially configured objects.
+    """
+
+    if isinstance(target, type):
+        def _builder() -> Any:
+            return target(*args, **kwargs)
+
+        return StrategyFactory(builder=_builder)
+
+    if callable(target) and not _is_strategy_instance(target):
+        def _builder_callable() -> Any:
+            return target(*args, **kwargs)
+
+        return StrategyFactory(builder=_builder_callable)
+
+    if args or kwargs:
+        raise TypeError(
+            "Cannot supply args/kwargs when providing a pre-built strategy instance"
+        )
+
+    def _builder_instance() -> Any:
+        return target
+
+    return StrategyFactory(builder=_builder_instance)
 
 
 @dataclass(slots=True)
@@ -92,4 +160,69 @@ class BaseExperimentSuite:
         return descriptors
 
 
-__all__ = ["BaseExperimentSuite", "SuiteInventory"]
+class DeclarativeExperimentSuite(BaseExperimentSuite):
+    """A suite that reads its inventory from declarative factories."""
+
+    research_factories: Sequence[StrategyFactory[ResearchStrategy]] = ()
+    forecast_factories: Sequence[StrategyFactory[ForecastStrategy]] = ()
+
+    def __init__(
+        self,
+        *,
+        suite_id: str | None = None,
+        version: str | None = None,
+        description: str | None = None,
+        research: Sequence[StrategyFactory[ResearchStrategy]] | None = None,
+        forecasts: Sequence[StrategyFactory[ForecastStrategy]] | None = None,
+    ) -> None:
+        if suite_id is not None:
+            self.suite_id = suite_id
+        if version is not None:
+            self.version = version
+        if description is not None:
+            self.description = description
+
+        self._research_factories: tuple[StrategyFactory[ResearchStrategy], ...] = (
+            tuple(research) if research is not None else tuple(self.research_factories)
+        )
+        self._forecast_factories: tuple[StrategyFactory[ForecastStrategy], ...] = (
+            tuple(forecasts)
+            if forecasts is not None
+            else tuple(self.forecast_factories)
+        )
+        super().__init__()
+
+    def _build_research_strategies(self) -> Sequence[ResearchStrategy]:
+        return tuple(factory() for factory in self._research_factories)
+
+    def _build_forecast_strategies(self) -> Sequence[ForecastStrategy]:
+        return tuple(factory() for factory in self._forecast_factories)
+
+
+def suite(
+    suite_id: str,
+    *,
+    version: str = "1.0",
+    description: str | None = None,
+    research: Sequence[StrategyFactory[ResearchStrategy]] | None = None,
+    forecasts: Sequence[StrategyFactory[ForecastStrategy]] | None = None,
+) -> BaseExperimentSuite:
+    """Convenience helper to assemble suites without subclassing."""
+
+    return DeclarativeExperimentSuite(
+        suite_id=suite_id,
+        version=version,
+        description=description,
+        research=tuple(research or ()),
+        forecasts=tuple(forecasts or ()),
+    )
+
+
+__all__ = [
+    "BaseExperimentSuite",
+    "DeclarativeExperimentSuite",
+    "StrategyFactory",
+    "SuiteInventory",
+    "strategy",
+    "suite",
+]

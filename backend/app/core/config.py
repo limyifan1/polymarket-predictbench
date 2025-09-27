@@ -82,17 +82,6 @@ class Settings(BaseSettings):
         default="07:00",
         description="Daily pipeline run time in HH:MM (24h) UTC",
     )
-    processing_experiments: list[str] = Field(
-        default_factory=list,
-        description="DEPRECATED: use processing_experiment_suites instead",
-    )
-    processing_experiment_suites: list[str] = Field(
-        default_factory=lambda: [
-            "pipelines.experiments.baseline:BaselineSnapshotSuite",
-            "pipelines.experiments.openai:OpenAIResearchForecastSuite",
-        ],
-        description="List of experiment suites to execute during processing",
-    )
     pipeline_debug_dump_dir: str | None = Field(
         default="../debug_dumps",
         description="Default directory where pipeline debug dumps are written (set blank to disable)",
