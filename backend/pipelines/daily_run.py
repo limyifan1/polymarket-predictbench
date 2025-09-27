@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager, FrozenSet, Iterable, Sequence
+from typing import Any, Callable, ContextManager, FrozenSet, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 from loguru import logger
@@ -98,6 +98,7 @@ class ResearchExecutionRecord:
     meta: ExperimentRunMeta
     output: ResearchOutput
     artifact_id: str | None = None
+    bundle_identity: str | None = None
 
 
 @dataclass(slots=True)
@@ -106,6 +107,24 @@ class ForecastExecutionRecord:
     output: ForecastOutput
     dependencies: tuple[str, ...]
     source_artifact_ids: dict[str, str | None] | None = None
+
+
+@dataclass(slots=True)
+class ResearchBundleMember:
+    suite_id: str
+    strategy_name: str
+    strategy: ResearchStrategy
+    meta: ExperimentRunMeta
+    experiment_name: str
+    config_fingerprint: str
+
+
+@dataclass(slots=True)
+class ResearchBundle:
+    key: tuple[str, ...]
+    identity: str
+    members: tuple[ResearchBundleMember, ...]
+    shared: bool
 
 
 @dataclass(slots=True)
@@ -497,110 +516,235 @@ def _group_forecasts_by_variant(
     return grouped
 
 
+def _normalize_for_fingerprint(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _normalize_for_fingerprint(val)
+            for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_normalize_for_fingerprint(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
+def _fingerprint_mapping(mapping: Mapping[str, Any] | None) -> str:
+    if not mapping:
+        return "default"
+    normalized = _normalize_for_fingerprint(mapping)
+    serialized = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
-def _prepare_experiment_metadata(
+
+def _variant_selected(
+    suite_id: str,
+    strategy_name: str,
+    selection: set[str] | None,
+) -> bool:
+    if not selection:
+        return True
+    return strategy_name in selection or f"{suite_id}:{strategy_name}" in selection
+
+
+def _build_research_bundles(
     suites: Sequence[BaseExperimentSuite],
-) -> tuple[list[ExperimentRunMeta], dict[tuple[str, ExperimentStage, str], ExperimentRunMeta]]:
-    metas: list[ExperimentRunMeta] = []
-    index: dict[tuple[str, ExperimentStage, str], ExperimentRunMeta] = {}
+    context: PipelineContext,
+    meta_index: Mapping[tuple[str, ExperimentStage, str], ExperimentRunMeta],
+) -> tuple[ResearchBundle, ...]:
+    bundles: dict[tuple[str, ...], list[ResearchBundleMember]] = {}
     for suite in suites:
         for strategy in suite.research_strategies():
-            meta = ExperimentRunMeta(
-                suite_id=suite.suite_id,
-                stage=ExperimentStage.RESEARCH,
-                strategy_name=strategy.name,
-                strategy_version=strategy.version,
-                experiment_name=suite.experiment_name(ExperimentStage.RESEARCH, strategy.name),
-                description=getattr(strategy, "description", None),
-                strategy=strategy,
-                run_identifier=str(uuid4()),
+            meta = meta_index[(suite.suite_id, ExperimentStage.RESEARCH, strategy.name)]
+            experiment_name = suite.experiment_name(
+                ExperimentStage.RESEARCH, strategy.name
             )
-            metas.append(meta)
-            index[(suite.suite_id, ExperimentStage.RESEARCH, strategy.name)] = meta
-        for strategy in suite.forecast_strategies():
-            meta = ExperimentRunMeta(
+            overrides = context.settings.experiment_config(experiment_name)
+            fingerprint = _fingerprint_mapping(overrides)
+            identity = getattr(strategy, "shared_identity", None)
+            if identity:
+                key: tuple[str, ...] = (
+                    "shared",
+                    identity,
+                    getattr(strategy, "version", "1.0"),
+                    fingerprint,
+                )
+            else:
+                key = ("suite", suite.suite_id, strategy.name)
+            member = ResearchBundleMember(
                 suite_id=suite.suite_id,
-                stage=ExperimentStage.FORECAST,
                 strategy_name=strategy.name,
-                strategy_version=strategy.version,
-                experiment_name=suite.experiment_name(ExperimentStage.FORECAST, strategy.name),
-                description=getattr(strategy, "description", None),
                 strategy=strategy,
-                run_identifier=str(uuid4()),
+                meta=meta,
+                experiment_name=experiment_name,
+                config_fingerprint=fingerprint,
             )
-            metas.append(meta)
-            index[(suite.suite_id, ExperimentStage.FORECAST, strategy.name)] = meta
-    return metas, index
+            bundles.setdefault(key, []).append(member)
+
+    ordered_keys = sorted(bundles, key=lambda item: item)
+    result: list[ResearchBundle] = []
+    for key in ordered_keys:
+        members = bundles[key]
+        shared = key[0] == "shared" and len(members) > 1
+        if key[0] == "shared":
+            identity = key[1]
+        else:
+            identity = f"{members[0].suite_id}:{members[0].strategy_name}"
+        result.append(
+            ResearchBundle(
+                key=key,
+                identity=identity,
+                members=tuple(members),
+                shared=shared,
+            )
+        )
+    return tuple(result)
 
 
-def _run_suite_for_group(
-    suite: BaseExperimentSuite,
+def _execute_research_bundles(
+    suites: Sequence[BaseExperimentSuite],
+    bundles: Sequence[ResearchBundle],
     group: EventMarketGroup,
     context: PipelineContext,
-    meta_index: dict[tuple[str, ExperimentStage, str], ExperimentRunMeta],
     *,
     active_stages: set[ExperimentStage],
-    enabled_research: set[str] | None = None,
-    enabled_forecast: set[str] | None = None,
-) -> tuple[dict[str, ResearchExecutionRecord], list[ForecastExecutionRecord]]:
-    def _enabled(strategy_name: str, enabled: set[str] | None) -> bool:
-        if not enabled:
-            return True
-        return strategy_name in enabled or f"{suite.suite_id}:{strategy_name}" in enabled
+    enabled_research: set[str] | None,
+) -> dict[str, dict[str, ResearchExecutionRecord]]:
+    suite_records: dict[str, dict[str, ResearchExecutionRecord]] = {
+        suite.suite_id: {} for suite in suites
+    }
 
-    research_records: dict[str, ResearchExecutionRecord] = {}
-    if ExperimentStage.RESEARCH in active_stages:
-        for strategy in suite.research_strategies():
-            meta = meta_index[(suite.suite_id, ExperimentStage.RESEARCH, strategy.name)]
-            if not _enabled(strategy.name, enabled_research):
-                meta.mark_skipped("research variant filtered by include-research")
+    if ExperimentStage.RESEARCH not in active_stages:
+        for bundle in bundles:
+            for member in bundle.members:
+                member.meta.mark_skipped(
+                    "research stage disabled by run configuration"
+                )
+        return suite_records
+
+    for bundle in bundles:
+        active_members: list[ResearchBundleMember] = []
+        for member in bundle.members:
+            if not _variant_selected(
+                member.suite_id, member.strategy_name, enabled_research
+            ):
+                member.meta.mark_skipped(
+                    "research variant filtered by include-research"
+                )
                 continue
-            try:
-                output = strategy.run(group, context)
-            except ExperimentSkip as exc:
-                meta.mark_skipped(str(exc))
+            active_members.append(member)
+
+        if not active_members:
+            continue
+
+        canonical = active_members[0]
+        strategy = canonical.strategy
+        try:
+            output = strategy.run(group, context)
+        except ExperimentSkip as exc:
+            message = str(exc)
+            for member in active_members:
+                member.meta.mark_skipped(message)
+            logger.info(
+                "Research bundle {} skipped group (suites={}, event={}): {}",
+                bundle.identity,
+                ", ".join(member.suite_id for member in active_members),
+                group.event.event_id if group.event else "none",
+                message,
+            )
+            continue
+        except ExperimentExecutionError as exc:
+            message = str(exc)
+            for member in active_members:
+                member.meta.mark_failed(message)
+            logger.error(
+                "Research bundle {} failed for event {}: {}",
+                bundle.identity,
+                group.event.event_id if group.event else "none",
+                exc,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            for member in active_members:
+                member.meta.mark_failed(message)
+            logger.exception(
+                "Unexpected error in research bundle {} for event {}",
+                bundle.identity,
+                group.event.event_id if group.event else "none",
+            )
+            raise ExperimentExecutionError(message) from exc
+        else:
+            bundle_identity = bundle.identity if bundle.shared else None
+            canonical.meta.record_success()
+            suite_records[canonical.suite_id][canonical.strategy_name] = (
+                ResearchExecutionRecord(
+                    meta=canonical.meta,
+                    output=output,
+                    bundle_identity=bundle_identity,
+                )
+            )
+            for member in active_members[1:]:
+                member.meta.record_success()
+                suite_records[member.suite_id][member.strategy_name] = (
+                    ResearchExecutionRecord(
+                        meta=member.meta,
+                        output=output,
+                        bundle_identity=bundle_identity,
+                    )
+                )
+            if bundle.shared and len(active_members) > 1:
                 logger.info(
-                    "Research strategy {} skipped group (suite {}, event {})",
-                    strategy.name,
-                    suite.suite_id,
-                    group.event.event_id if group.event else "none",
+                    "Reused research strategy {} across suites [{}] (fingerprint={})",
+                    canonical.strategy_name,
+                    ", ".join(member.suite_id for member in active_members),
+                    canonical.config_fingerprint,
                 )
-                continue
-            except ExperimentExecutionError as exc:
-                meta.mark_failed(str(exc))
-                logger.error(
-                    "Research strategy {} failed for suite {} and event {}: {}",
-                    strategy.name,
-                    suite.suite_id,
-                    group.event.event_id if group.event else "none",
-                    exc,
-                )
-                raise
-            except Exception as exc:  # noqa: BLE001
-                meta.mark_failed(str(exc))
-                logger.exception(
-                    "Unexpected error in research strategy {} for suite {}",
-                    strategy.name,
-                    suite.suite_id,
-                )
-                raise ExperimentExecutionError(str(exc)) from exc
-            else:
-                meta.record_success()
-                research_records[strategy.name] = ResearchExecutionRecord(meta=meta, output=output)
-    else:
-        for strategy in suite.research_strategies():
-            meta = meta_index[(suite.suite_id, ExperimentStage.RESEARCH, strategy.name)]
-            meta.mark_skipped("research stage disabled by run configuration")
 
+    return suite_records
+
+
+def _execute_forecast_stage(
+    suites: Sequence[BaseExperimentSuite],
+    group: EventMarketGroup,
+    context: PipelineContext,
+    meta_index: Mapping[tuple[str, ExperimentStage, str], ExperimentRunMeta],
+    suite_research_records: Mapping[str, Mapping[str, ResearchExecutionRecord]],
+    *,
+    active_stages: set[ExperimentStage],
+    enabled_forecast: set[str] | None,
+) -> list[ForecastExecutionRecord]:
     forecast_records: list[ForecastExecutionRecord] = []
-    if ExperimentStage.FORECAST in active_stages:
-        available_outputs = {name: record.output for name, record in research_records.items()}
+
+    if ExperimentStage.FORECAST not in active_stages:
+        for suite in suites:
+            for strategy in suite.forecast_strategies():
+                meta = meta_index[(suite.suite_id, ExperimentStage.FORECAST, strategy.name)]
+                meta.mark_skipped(
+                    "forecast stage disabled by run configuration"
+                )
+        return forecast_records
+
+    for suite in suites:
+        available_outputs = {
+            name: record.output
+            for name, record in suite_research_records.get(suite.suite_id, {}).items()
+        }
         for strategy in suite.forecast_strategies():
             meta = meta_index[(suite.suite_id, ExperimentStage.FORECAST, strategy.name)]
-            if not _enabled(strategy.name, enabled_forecast):
-                meta.mark_skipped("forecast variant filtered by include-forecast")
+            if not _variant_selected(
+                suite.suite_id, strategy.name, enabled_forecast
+            ):
+                meta.mark_skipped(
+                    "forecast variant filtered by include-forecast"
+                )
                 continue
             missing = [name for name in strategy.requires if name not in available_outputs]
             if missing:
@@ -653,11 +797,48 @@ def _run_suite_for_group(
                             dependencies=tuple(strategy.requires),
                         )
                     )
-    else:
+
+    return forecast_records
+
+
+
+
+
+def _prepare_experiment_metadata(
+    suites: Sequence[BaseExperimentSuite],
+) -> tuple[list[ExperimentRunMeta], dict[tuple[str, ExperimentStage, str], ExperimentRunMeta]]:
+    metas: list[ExperimentRunMeta] = []
+    index: dict[tuple[str, ExperimentStage, str], ExperimentRunMeta] = {}
+    for suite in suites:
+        for strategy in suite.research_strategies():
+            meta = ExperimentRunMeta(
+                suite_id=suite.suite_id,
+                stage=ExperimentStage.RESEARCH,
+                strategy_name=strategy.name,
+                strategy_version=strategy.version,
+                experiment_name=suite.experiment_name(ExperimentStage.RESEARCH, strategy.name),
+                description=getattr(strategy, "description", None),
+                strategy=strategy,
+                run_identifier=str(uuid4()),
+            )
+            setattr(strategy, "_experiment_name", meta.experiment_name)
+            metas.append(meta)
+            index[(suite.suite_id, ExperimentStage.RESEARCH, strategy.name)] = meta
         for strategy in suite.forecast_strategies():
-            meta = meta_index[(suite.suite_id, ExperimentStage.FORECAST, strategy.name)]
-            meta.mark_skipped("forecast stage disabled by run configuration")
-    return research_records, forecast_records
+            meta = ExperimentRunMeta(
+                suite_id=suite.suite_id,
+                stage=ExperimentStage.FORECAST,
+                strategy_name=strategy.name,
+                strategy_version=strategy.version,
+                experiment_name=suite.experiment_name(ExperimentStage.FORECAST, strategy.name),
+                description=getattr(strategy, "description", None),
+                strategy=strategy,
+                run_identifier=str(uuid4()),
+            )
+            setattr(strategy, "_experiment_name", meta.experiment_name)
+            metas.append(meta)
+            index[(suite.suite_id, ExperimentStage.FORECAST, strategy.name)] = meta
+    return metas, index
 
 
 
@@ -742,6 +923,12 @@ def run_pipeline(
             settings=settings,
             db_session=session,
             dry_run=args.dry_run,
+        )
+
+        research_bundles = _build_research_bundles(
+            suites,
+            pipeline_context,
+            experiment_meta_index,
         )
 
         processing_run = None
@@ -839,20 +1026,23 @@ def run_pipeline(
                 group = EventMarketGroup(event=event_payload, markets=markets)
 
                 try:
-                    suite_research_records: dict[str, dict[str, ResearchExecutionRecord]] = {}
-                    forecast_records: list[ForecastExecutionRecord] = []
-                    for suite in suites:
-                        research_records, suite_forecasts = _run_suite_for_group(
-                            suite,
-                            group,
-                            pipeline_context,
-                            experiment_meta_index,
-                            active_stages=active_stages,
-                            enabled_research=enabled_research,
-                            enabled_forecast=enabled_forecast,
-                        )
-                        suite_research_records[suite.suite_id] = research_records
-                        forecast_records.extend(suite_forecasts)
+                    suite_research_records = _execute_research_bundles(
+                        suites,
+                        research_bundles,
+                        group,
+                        pipeline_context,
+                        active_stages=active_stages,
+                        enabled_research=enabled_research,
+                    )
+                    forecast_records = _execute_forecast_stage(
+                        suites,
+                        group,
+                        pipeline_context,
+                        experiment_meta_index,
+                        suite_research_records,
+                        active_stages=active_stages,
+                        enabled_forecast=enabled_forecast,
+                    )
                 except ExperimentExecutionError as exc:
                     for market in markets:
                         summary.failed_markets += 1

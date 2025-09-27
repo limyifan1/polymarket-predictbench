@@ -93,6 +93,7 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
     name: str = ""
     version: str = "1.0"
     description: str | None = None
+    shared_identity: str | None = None
 
     system_message: str = ""
     default_model: str | None = DEFAULT_RESEARCH_MODEL
