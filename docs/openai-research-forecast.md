@@ -1,5 +1,10 @@
 # OpenAI-Powered Research & Forecast Flow
 
+> **Provider note:** The experiment framework now routes through a pluggable LLM provider
+> registry. The strategies described here default to the OpenAI provider but can be executed
+> against Gemini by setting `provider: gemini` (and disabling tool usage) via
+> `experiment_config` overrides.
+
 ## Goals
 - Add an automated research stage that can search the web for credible, up-to-date context about each Polymarket event.
 - Feed the synthesized research into a lightweight forecasting stage that produces calibrated probability estimates using GPT‑5.
@@ -136,8 +141,9 @@ Add the following environment variables (documented in `.env.example`):
 - `OPENAI_API_BASE` – optional override (Azure/OpenAI proxy).
 - `OPENAI_ORG_ID` – optional; pass-through to match billing orgs.
 - `OPENAI_PROJECT_ID` – optional; useful when scoping usage tracking.
-- `OPENAI_RESEARCH_MODEL` – default `gpt-4.1-mini`.
-- `OPENAI_FORECAST_MODEL` – default `gpt-5`.
+- Default models live in the strategy classes (`gpt-4.1-mini` for research,
+  `gpt-5` for forecasts). Override them per experiment via `experiment_config`
+  if you want to test other variants without changing environment variables.
 
 ## Error Handling & Observability
 - Wrap every external call in retry logic with exponential backoff (SDK defaults cover transient HTTP 429/5xx).
