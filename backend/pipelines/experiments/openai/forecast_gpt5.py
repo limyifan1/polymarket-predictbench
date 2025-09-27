@@ -12,12 +12,11 @@ from app.domain.models import NormalizedMarket
 from ..base import (
     EventMarketGroup,
     ExperimentExecutionError,
-    ExperimentSkip,
     ForecastOutput,
     ForecastStrategy,
 )
 from ...context import PipelineContext
-from ..llm_support import extract_json, json_mode_kwargs, resolve_llm_request, usage_dict
+from ..llm_support import resolve_llm_request
 from .base import _format_market, _strategy_stage_name
 
 
@@ -135,7 +134,7 @@ class GPT5ForecastStrategy(ForecastStrategy):
 
             schema_name, schema = _forecast_schema(market)
             request_kwargs = runtime.merge_options(
-                json_mode_kwargs(runtime.client, schema_name=schema_name, schema=schema)
+                runtime.json_mode_kwargs(schema_name=schema_name, schema=schema)
             )
             research_payloads: list[tuple[str, dict[str, Any]]] = []
             for name in self.requires:
@@ -147,18 +146,19 @@ class GPT5ForecastStrategy(ForecastStrategy):
                 research_payloads.append((name, artifact.payload))
 
             try:
-                response = runtime.client.responses.create(
-                    model=runtime.model,
-                    input=self.build_messages(market=market, research_payloads=research_payloads),
-                    **request_kwargs,
+                response = runtime.invoke(
+                    messages=self.build_messages(
+                        market=market,
+                        research_payloads=research_payloads,
+                    ),
+                    options=request_kwargs,
+                    tools=runtime.tools,
                 )
-            except ExperimentSkip:
-                raise
             except Exception as exc:  # noqa: BLE001
                 logger.exception("LLM forecast request failed")
                 raise ExperimentExecutionError(str(exc)) from exc
 
-            forecast_payload = extract_json(response)
+            forecast_payload = runtime.extract_json(response)
             outcomes_payload = forecast_payload.get("outcomes", {})
             outcome_prices: dict[str, float | None] = {}
             rationales: list[str] = []
@@ -175,7 +175,7 @@ class GPT5ForecastStrategy(ForecastStrategy):
                 reasoning = "\n".join(rationales) or f"Forecast generated via {runtime.model}"
 
             diagnostics = runtime.diagnostics(
-                usage=usage_dict(response),
+                usage=runtime.usage_dict(response),
                 extra={"confidence": forecast_payload.get("confidence")},
             )
 
