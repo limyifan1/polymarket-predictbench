@@ -41,30 +41,41 @@ uv run uvicorn app.main:app --reload --port 8000
 
 `uv run` executes the command inside the managed environment, so you can skip manual activation.
 
-### Daily Pipeline (recommended)
+## Common Local Workflows
 
-The ingestion + processing pipeline now lives under `backend/pipelines/daily_run.py`. It fetches only markets closing a fixed number of days in the future (defaults to 7), executes registered experiments, persists successful results, and records metadata about the run.
+All commands assume you are inside the `backend/` directory with a virtual environment (or `uv`) activated.
+
+| Goal | Command | Notes |
+| --- | --- | --- |
+| Sanity-check ingestion + experiments without writes | `uv run python -m pipelines.daily_run --dry-run` | Streams markets, runs the registered suites, and prints a run summary without mutating the database. |
+| Run the full pipeline against your configured database | `uv run python -m pipelines.daily_run` | Persists processed events, experiment results, and failures using the database defined in `.env`. |
+| Inspect which suites/variants would run | `uv run python -m pipelines.daily_run --list-experiments` | Emits a JSON manifest respecting any additional CLI filters; no network calls are made. |
+| Test only specific suites or stages | `uv run python -m pipelines.daily_run --suite baseline --stage research --dry-run` | Repeat `--suite` to include multiple suites; combine with `--include-research` / `--include-forecast` for fine-grained ablations. |
+| Limit scope for debugging | `uv run python -m pipelines.daily_run --limit 5 --dry-run` | Stops after five markets to keep feedback loops fast. |
+| Capture request/response payloads | `uv run python -m pipelines.daily_run --dry-run --debug-dump-dir ../debug-dumps` | Useful when adjusting prompts or the Polymarket client; disable via `--no-debug-dump`. |
+| Launch the FastAPI server | `uv run uvicorn app.main:app --reload --port 8000` | Visit `http://localhost:8000/docs` for Swagger UI and hit `/healthz` for a quick readiness probe. |
+| Start the Next.js dashboard | `cd ../frontend && npm install && npm run dev` | Expects the API at `http://localhost:8000`; override with `NEXT_PUBLIC_API_BASE_URL`. |
+
+Quick checks before committing changes:
 
 ```bash
-cd backend
-uv run python -m pipelines.daily_run --dry-run             # fetch + process without writes
-uv run python -m pipelines.daily_run                       # full run, writes to the configured DB
-uv run python -m pipelines.daily_run --window-days 3       # change close-date horizon
-uv run python -m pipelines.daily_run --target-date 2025-03-01  # explicit processing window
-uv run python -m pipelines.daily_run --summary-path ../summary.json
-uv run python -m pipelines.daily_run --limit 5 --dry-run   # only inspect the first 5 markets
+uv run python -m pipelines.daily_run --dry-run --limit 5
+curl "http://localhost:8000/healthz"
+cd ../frontend && npm run lint
 ```
 
-- Daily GitHub Actions runs pass repository secrets `SUPABASE_DB_URL` / `SUPABASE_SERVICE_ROLE_KEY` and can override the ingestion window via the `TARGET_CLOSE_WINDOW_DAYS` environment variable or the `window_days` workflow dispatch input (defaults to 7).
-- `--dry-run` is useful locally to confirm API reachability without mutating the database.
-- Repository variables `INGESTION_FILTERS` and `INGESTION_PAGE_SIZE` propagate to the pipeline so the Polymarket client uses the same pagination/filters as your production runs.
-- `--summary-path` writes a JSON artifact with `run_id`, `run_date`, `target_date`, totals, and the failure list to help CI notifications.
-- Additional filters: `--suite` (repeatable) limits execution to specific suites, `--stage` toggles research/forecast stages, and `--include-research` / `--include-forecast` run only selected variants.
-- `--debug-dump-dir <path>` writes per-event JSON dumps of research + forecast payloads (useful during dry runs).
-- Markets are bucketed by event before experiments run; a failed experiment marks every market in that event, and the API exposes the grouped view via `GET /events` for the frontend dashboard.
-- When the pipeline runs against production, `ENVIRONMENT=production` now requires `SUPABASE_DB_URL`; the app will error early if the secret is missing so we never fall back to SQLite while deploying.
-- The repository ships with `.github/workflows/daily-pipeline.yml`, which runs the pipeline every day at 07:00 UTC (and on manual dispatch). Configure repository secrets `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY` so GitHub Actions can write to Supabase. Use the pooled Postgres **connection string** from Supabase (`Database` → `Connection string` → `psql`) – it should start with `postgresql://`; the app automatically upgrades it to `postgresql+psycopg://` and injects `sslmode=require`/`target_session_attrs=read-write` so SQLAlchemy negotiates correctly with Supabase. Manual runs can override `window_days`, `target_date`, or toggle a dry-run directly from the workflow UI.
-- The pipeline aborts if no suites are registered; edit `backend/pipelines/experiments/registry.py` to adjust `REGISTERED_SUITE_BUILDERS`. Each builder returns a `BaseExperimentSuite`, so adding or removing suites is a matter of updating the tuple. Use the declarative helpers in `pipelines.experiments.suites` (`strategy(...)`, `suite(...)`) to keep suite definitions compact.
+### Pipeline Deep Dive
+
+The ingestion + processing pipeline lives under `backend/pipelines/daily_run.py`. It fetches markets closing within a configurable horizon (default seven days ahead), groups them by event, runs the registered experiment suites, persists successful results, and records structured run metadata. See [`docs/polymarket-open-markets.md`](docs/polymarket-open-markets.md) for a full walkthrough of each stage.
+
+Key CLI knobs:
+
+- `--window-days <int>`: change the forward-looking close-date horizon.
+- `--target-date YYYY-MM-DD`: process a specific close date instead of a rolling window.
+- `--suite <id>` / `--stage {research,forecast,both}` / `--include-research` / `--include-forecast`: narrow the experiment surface for ablation runs.
+- `--summary-path <path>`: write a machine-readable run summary (handy for CI artifacts and regression tracking).
+- `--debug-dump-dir <path>` / `--no-debug-dump`: control JSON payload dumps.
+- `--limit <int>`: cap the number of markets processed during smoke tests.
 
 #### How Polymarket events are retrieved
 - The pipeline wraps `https://gamma-api.polymarket.com/markets` via `ingestion.client.PolymarketClient`, which serializes query parameters and paginates with the configured `ingestion_page_size` (default 200).
@@ -118,6 +129,14 @@ npm run dev
 ```
 
 The dashboard expects the backend API at `http://localhost:8000`. Adjust `NEXT_PUBLIC_API_BASE_URL` in `.env` if the backend runs elsewhere.
+
+## Daily Automation (GitHub Actions)
+
+- **What runs**: `.github/workflows/daily-pipeline.yml` executes `python -m pipelines.daily_run` every day at 07:00 UTC and whenever you trigger the workflow manually.
+- **Secrets and variables**: configure `SUPABASE_DB_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and optionally `OPENAI_API_KEY` in the repository secrets. Provide `INGESTION_FILTERS` / `INGESTION_PAGE_SIZE` as repository variables to keep pagination consistent with local runs.
+- **Arguments**: manual dispatch lets you override the processing horizon (`window_days`), target date (`target_date`), or toggle a dry run. Leave inputs blank to inherit the CLI defaults. The workflow automatically writes a run summary to `artifacts/pipeline-summary.json` and uploads it for later inspection.
+- **Tweaks**: edit the cron expression at the top of the workflow to change the schedule. Adjust the `ARGS` construction in the `Run daily pipeline` step to pass additional flags (e.g., `--suite` or `--limit`) or to point `--summary-path` somewhere else. Because the job sets `ENVIRONMENT=production`, the pipeline will abort early if the Supabase secrets are missing—ideal for catching misconfigurations.
+- **Local parity**: run the same command locally (see table above) to reproduce GitHub Actions behaviour. The only differences are environment variables and the fact that GitHub persists the summary artifact automatically.
 
 ## Development Notes
 

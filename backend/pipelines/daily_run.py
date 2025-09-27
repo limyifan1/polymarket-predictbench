@@ -40,6 +40,7 @@ from .experiments.base import (
     ResearchStrategy,
     ForecastStrategy,
 )
+from .experiments.manifest import build_manifest
 from .experiments.registry import load_suites
 from .experiments.suites import BaseExperimentSuite
 
@@ -58,22 +59,38 @@ class ExperimentRunMeta:
     finished_at: datetime | None = None
     status: str = "running"
     error_messages: list[str] = field(default_factory=list)
+    success_count: int = 0
+    skip_count: int = 0
+    failure_count: int = 0
 
     def mark_failed(self, message: str) -> None:
         self.status = "failed"
         self.error_messages.append(message)
+        self.failure_count += 1
 
     def mark_completed(self) -> None:
         if self.status == "running":
             self.status = "completed"
 
     def mark_skipped(self, message: str | None = None) -> None:
+        self.skip_count += 1
         if self.status == "failed":
+            return
+        if self.success_count > 0:
+            if message and message not in self.error_messages:
+                self.error_messages.append(message)
             return
         if self.status != "skipped":
             self.status = "skipped"
         if message and message not in self.error_messages:
             self.error_messages.append(message)
+
+    def record_success(self) -> None:
+        if self.status == "failed":
+            return
+        if self.status == "skipped":
+            self.status = "running"
+        self.success_count += 1
 
 
 @dataclass(slots=True)
@@ -92,6 +109,37 @@ class ForecastExecutionRecord:
 
 
 @dataclass(slots=True)
+class StageRunStats:
+    completed: int = 0
+    skipped: int = 0
+    failed: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "completed": self.completed,
+            "skipped": self.skipped,
+            "failed": self.failed,
+        }
+
+
+@dataclass(slots=True)
+class SuiteRunStats:
+    research: StageRunStats = field(default_factory=StageRunStats)
+    forecast: StageRunStats = field(default_factory=StageRunStats)
+
+    def stage(self, stage: ExperimentStage) -> StageRunStats:
+        if stage == ExperimentStage.RESEARCH:
+            return self.research
+        return self.forecast
+
+    def to_dict(self) -> dict[str, dict[str, int]]:
+        return {
+            "research": self.research.to_dict(),
+            "forecast": self.forecast.to_dict(),
+        }
+
+
+@dataclass(slots=True)
 class PipelineSummary:
     run_id: str
     run_date: date
@@ -101,6 +149,7 @@ class PipelineSummary:
     processed_markets: int = 0
     failed_markets: int = 0
     failures: list[dict[str, str]] = field(default_factory=list)
+    suite_stats: dict[str, SuiteRunStats] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -112,7 +161,18 @@ class PipelineSummary:
             "processed_markets": self.processed_markets,
             "failed_markets": self.failed_markets,
             "failures": self.failures,
+            "suite_stats": {
+                suite_id: stats.to_dict()
+                for suite_id, stats in sorted(self.suite_stats.items())
+            },
         }
+
+    def record_experiment_meta(self, meta: ExperimentRunMeta) -> None:
+        suite_stats = self.suite_stats.setdefault(meta.suite_id, SuiteRunStats())
+        stage_stats = suite_stats.stage(meta.stage)
+        stage_stats.completed += meta.success_count
+        stage_stats.skipped += meta.skip_count
+        stage_stats.failed += meta.failure_count
 
 
 @dataclass(slots=True)
@@ -191,6 +251,11 @@ def _parse_args() -> argparse.Namespace:
         "--no-debug-dump",
         action="store_true",
         help="Disable writing debug payload dumps for this run",
+    )
+    parser.add_argument(
+        "--list-experiments",
+        action="store_true",
+        help="Print the configured experiment manifest and exit",
     )
     return parser.parse_args()
 
@@ -490,6 +555,7 @@ def _run_suite_for_group(
                 )
                 raise ExperimentExecutionError(str(exc)) from exc
             else:
+                meta.record_success()
                 research_records[strategy.name] = ResearchExecutionRecord(meta=meta, output=output)
     else:
         for strategy in suite.research_strategies():
@@ -546,6 +612,7 @@ def _run_suite_for_group(
                 )
                 raise ExperimentExecutionError(str(exc)) from exc
             else:
+                meta.record_success()
                 for output in outputs:
                     forecast_records.append(
                         ForecastExecutionRecord(
@@ -571,18 +638,8 @@ def _write_summary(path: Path, summary: PipelineSummary) -> None:
 def main() -> None:
     args = _parse_args()
     settings = get_settings()
-    init_db()
-
-    now = datetime.now(timezone.utc)
-    run_date = now.date()
-    window_days, target_date = _resolve_dates(
-        run_date=run_date, window_days=args.window_days, target_date_override=args.target_date
-    )
-
-    start_bound, end_bound = _day_bounds(target_date)
-    filters = _build_filters(settings=settings, start=start_bound, end=end_bound)
-
     suites = load_suites(args.suite)
+
     stage_selection = args.stage
     stage_map = {
         "research": {ExperimentStage.RESEARCH},
@@ -597,6 +654,33 @@ def main() -> None:
     enabled_forecast = _parse_variant_filter(args.include_forecast)
     if not enabled_forecast:
         enabled_forecast = None
+
+    if args.list_experiments:
+        manifest = build_manifest(
+            suites,
+            active_stages=active_stages,
+            enabled_research=enabled_research,
+            enabled_forecast=enabled_forecast,
+        )
+        manifest["configuration"] = {
+            "stage": stage_selection,
+            "suite_filter": list(args.suite or []),
+            "include_research": sorted(enabled_research) if enabled_research else None,
+            "include_forecast": sorted(enabled_forecast) if enabled_forecast else None,
+        }
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return
+
+    init_db()
+
+    now = datetime.now(timezone.utc)
+    run_date = now.date()
+    window_days, target_date = _resolve_dates(
+        run_date=run_date, window_days=args.window_days, target_date_override=args.target_date
+    )
+
+    start_bound, end_bound = _day_bounds(target_date)
+    filters = _build_filters(settings=settings, start=start_bound, end=end_bound)
 
     debug_dump_dir: Path | None = None
     if not args.no_debug_dump and args.debug_dump_dir:
@@ -941,6 +1025,9 @@ def main() -> None:
                     ),
                     description=meta.description,
                 )
+
+    for meta in experiment_metas:
+        summary.record_experiment_meta(meta)
 
     logger.info(
         "Pipeline run {} completed. processed={}, failed={}, total={}",
