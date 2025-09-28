@@ -38,6 +38,28 @@ baseline_suite = suite(
 )
 ```
 
+Gemini experiments reuse the same declarative helper while swapping in Gemini
+strategies:
+
+```python
+from pipelines.experiments.gemini import (
+    GeminiForecastStrategy,
+    GeminiWebSearchResearch,
+)
+from pipelines.experiments.suites import strategy, suite
+
+gemini_suite = suite(
+    "gemini",
+    research=(strategy(GeminiWebSearchResearch),),
+    forecasts=(
+        strategy(
+            GeminiForecastStrategy,
+            requires=("gemini_web_search",),
+        ),
+    ),
+)
+```
+
 `strategy(...)` accepts a class, instance, or factory callable plus kwargs. Each
 suite instantiation creates fresh strategy objects, so they remain stateless
 between runs.
@@ -59,9 +81,13 @@ between runs.
       "openai",
       research=(strategy(OpenAIWebSearchResearch),),
       forecasts=(
-          strategy(GPT5ForecastStrategy),
           strategy(
               GPT5ForecastStrategy,
+              requires=("openai_web_search",),
+          ),
+          strategy(
+              GPT5ForecastStrategy,
+              requires=("openai_web_search", "atlas_research_sweep"),
               alias="gpt41_forecast",
               version="0.2-gpt4.1",
               overrides={"model": "gpt-4.1"},
@@ -104,9 +130,10 @@ Provider abstractions live in `backend/app/services/llm/`.
   hooks for JSON-mode kwargs, invocation, and usage accounting. Strategies call
   the methods on the request spec rather than importing provider-specific
   helpers.
-- When switching providers, review default tools: Gemini does not enable web
-  search tooling by default, so strategies requiring search should opt out or
-  provide provider-specific overrides.
+- When switching providers, review default tools: Gemini research stages now
+  opt into the `google_search_retrieval` tool for live citations by default.
+  Supply `tools=[]` or override with `google_search_retrieval` if you need to
+  disable or customise the grounding behaviour.
 
 ### Per-run overrides for ablations
 - Use `--experiment-override` on the pipeline CLI to swap models or tweak

@@ -29,6 +29,8 @@ jobs:
       INGESTION_FILTERS: ${{ vars.INGESTION_FILTERS }}
       INGESTION_PAGE_SIZE: ${{ vars.INGESTION_PAGE_SIZE }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_ADDITIONAL_API_KEYS: ${{ secrets.GEMINI_ADDITIONAL_API_KEYS }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -61,6 +63,8 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           INGESTION_FILTERS: ${{ vars.INGESTION_FILTERS }}
           INGESTION_PAGE_SIZE: ${{ vars.INGESTION_PAGE_SIZE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_ADDITIONAL_API_KEYS: ${{ secrets.GEMINI_ADDITIONAL_API_KEYS }}
         run: |
           SUMMARY_PATH="${GITHUB_WORKSPACE}/artifacts/pipeline-summary.json"
           ARGS=("--summary-path" "${SUMMARY_PATH}")

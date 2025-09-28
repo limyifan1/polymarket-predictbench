@@ -633,33 +633,49 @@ def _dump_debug_artifacts(
         logger.exception("Failed to create debug dump directory {}", dump_dir)
         return
 
+    research_payload: dict[str, Any] = {}
+    for name, record in research_records.items():
+        entry: dict[str, Any] = {
+            "variant": record.meta.strategy_name,
+            "version": record.meta.strategy_version,
+            "artifact_id": record.artifact_id,
+            "artifact_uri": record.output.artifact_uri,
+            "artifact_hash": record.output.artifact_hash,
+            "payload": record.output.payload,
+            "diagnostics": record.output.diagnostics,
+        }
+        research_payload[name] = entry
+
+    forecasts_payload: dict[str, Any] = {}
+    for variant, variant_records in _group_forecasts_by_variant(forecast_records).items():
+        variant_payload: dict[str, Any] = {}
+        for record in variant_records:
+            entry: dict[str, Any] = {
+                "outcomePrices": record.output.outcome_prices,
+                "reasoning": record.output.reasoning,
+            }
+            if record.output.score is not None:
+                entry["score"] = record.output.score
+            diagnostics = record.output.diagnostics or {}
+            if diagnostics:
+                entry["diagnostics"] = diagnostics
+            dependency_map: dict[str, str | None] = {}
+            for dependency in record.dependencies:
+                research_record = research_records.get(dependency)
+                if research_record is not None:
+                    dependency_map[dependency] = research_record.artifact_id
+            if dependency_map:
+                entry["_research_artifacts"] = dependency_map
+            variant_payload[record.output.market_id] = entry
+        forecasts_payload[variant] = variant_payload
+
     payload = {
         "run_id": run_id,
         "suite_id": suite_id,
         "event": _serialize_event(group.event),
         "markets": [_serialize_market(market) for market in group.markets],
-        "research": {
-            name: {
-                "variant": record.meta.strategy_name,
-                "version": record.meta.strategy_version,
-                "artifact_id": record.artifact_id,
-                "artifact_uri": record.output.artifact_uri,
-                "artifact_hash": record.output.artifact_hash,
-                "payload": record.output.payload,
-                "diagnostics": record.output.diagnostics,
-            }
-            for name, record in research_records.items()
-        },
-        "forecasts": {
-            variant: {
-                record.output.market_id: {
-                    "outcomePrices": record.output.outcome_prices,
-                    "reasoning": record.output.reasoning,
-                }
-                for record in variant_records
-            }
-            for variant, variant_records in _group_forecasts_by_variant(forecast_records).items()
-        },
+        "research": research_payload,
+        "forecasts": forecasts_payload,
     }
 
     target_path = dump_dir / f"{event_identifier}.json"
@@ -1382,10 +1398,14 @@ def run_pipeline(
                             forecast_record.output.market_id,
                         )
                         continue
-                    payload = {
-                        "outcomePrices": forecast_record.output.outcome_prices,
-                        "reasoning": forecast_record.output.reasoning,
-                    }
+                    payload = _enrich_payload(
+                        {
+                            "outcomePrices": forecast_record.output.outcome_prices,
+                            "reasoning": forecast_record.output.reasoning,
+                        },
+                        diagnostics=forecast_record.output.diagnostics,
+                        references=dependencies if dependencies else None,
+                    )
                     processing_repo.record_experiment_result(
                         ExperimentResultInput(
                             experiment_run_id=forecast_record.meta.run_identifier,

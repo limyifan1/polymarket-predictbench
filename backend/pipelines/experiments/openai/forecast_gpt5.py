@@ -69,10 +69,15 @@ class GPT5ForecastStrategy(ForecastStrategy):
     name = "gpt5_forecast"
     version = "0.2"
     description = "JSON-mode forecast prompt using GPT-5 preview"
-    requires: Sequence[str] = ("openai_web_search",)
     default_model: str | None = DEFAULT_FORECAST_MODEL
     default_request_options: Mapping[str, Any] | None = None
     require_api_key: bool = True
+
+    def __init__(self, *, requires: Sequence[str]) -> None:
+        if not requires:
+            raise ValueError("GPT5ForecastStrategy requires at least one research dependency")
+        self.requires = tuple(str(dep) for dep in requires)
+    default_provider: str | None = None
 
     def resolve_default_model(self, context: PipelineContext) -> str | None:
         del context
@@ -124,6 +129,7 @@ class GPT5ForecastStrategy(ForecastStrategy):
             default_tools=None,
             default_request_options=self.default_request_options,
             require_api_key=self.require_api_key,
+            default_provider=self.default_provider,
         )
 
         outputs: list[ForecastOutput] = []

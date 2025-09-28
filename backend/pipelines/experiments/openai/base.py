@@ -63,7 +63,7 @@ def _format_event(event: NormalizedEvent | None) -> str:
 def _format_market(
     market: NormalizedMarket,
     *,
-    include_contract_prices: bool = True,
+    include_contract_prices: bool = False,
 ) -> str:
     lines = [
         f"Market: {market.question}",
@@ -109,6 +109,7 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
     default_tools: tuple[Mapping[str, Any], ...] | None = None
     default_request_options: Mapping[str, Any] | None = None
     require_api_key: bool = True
+    default_provider: str | None = None
     error_label: str = "LLM research request failed"
 
     def resolve_default_model(self, context: PipelineContext) -> str | None:
@@ -192,6 +193,7 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
             default_tools=self.default_tools,
             default_request_options=self.default_request_options,
             require_api_key=self.require_api_key,
+            default_provider=self.default_provider,
         )
 
         schema_name, schema = self.build_schema(group, context=context, runtime=runtime)

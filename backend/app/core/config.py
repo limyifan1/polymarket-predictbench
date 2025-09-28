@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -110,6 +111,13 @@ class Settings(BaseSettings):
         default=None,
         description="API key used for Gemini-powered research and forecasting",
     )
+    gemini_additional_api_keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional fallback Gemini API keys; the provider will cycle through them "
+            "if the primary key is rate-limited or fails."
+        ),
+    )
     experiment_overrides: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         description="Per-experiment overrides keyed by experiment name",
@@ -173,6 +181,26 @@ class Settings(BaseSettings):
                 "SUPABASE_DB_URL must be a PostgreSQL connection string (e.g. postgresql://...)."
             )
         return value
+
+    @classmethod
+    @field_validator("gemini_additional_api_keys", mode="before")
+    def _parse_additional_gemini_keys(cls, value: Any) -> list[str]:
+        if value in (None, "", []):
+            return []
+        if isinstance(value, str):
+            candidate = value.strip()
+            if not candidate:
+                return []
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                return [item for item in (part.strip() for part in candidate.split(",")) if item]
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            raise ValueError("GEMINI_ADDITIONAL_API_KEYS must be a list when provided as JSON")
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        raise ValueError("GEMINI_ADDITIONAL_API_KEYS must be provided as a list or comma-separated string")
 
     @property
     def resolved_database_url(self) -> str:

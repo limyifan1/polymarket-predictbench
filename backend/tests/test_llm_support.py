@@ -76,3 +76,18 @@ def test_gemini_extract_json_parses_payload(payload: str) -> None:
     assert parsed == {"value": 1}
     usage = provider.usage_dict(response)
     assert usage["prompt_token_count"] == 10
+
+
+def test_gemini_default_tools_include_google_search_retrieval() -> None:
+    context = build_context({"dummy": {"provider": "gemini"}})
+    runtime = resolve_llm_request(
+        DummyStrategy(),
+        context,
+        stage="research",
+        default_model=None,
+        fallback_model=None,
+        default_tools=None,
+        default_request_options=None,
+    )
+    assert runtime.tools is not None
+    assert {"google_search_retrieval": {}} in runtime.tools

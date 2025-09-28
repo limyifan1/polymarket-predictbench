@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from importlib import import_module
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from loguru import logger
@@ -34,6 +37,7 @@ class LLMRequestSpec:
     request_options: dict[str, Any] = field(default_factory=dict)
     tools: tuple[Mapping[str, Any], ...] | None = None
     overrides: Mapping[str, Any] = field(default_factory=dict)
+    last_request: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def merge_options(self, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Return request options merged with optional additional values."""
@@ -63,9 +67,12 @@ class LLMRequestSpec:
             "provider": self.provider,
         }
         if usage:
-            payload["usage"] = usage
+            payload["usage"] = _json_safe(usage)
         if extra:
-            payload.update(extra)
+            for key, value in extra.items():
+                payload[key] = _json_safe(value)
+        if self.last_request:
+            payload.setdefault("request", self.last_request)
         return payload
 
     def json_mode_kwargs(
@@ -90,6 +97,18 @@ class LLMRequestSpec:
         message_count = len(messages)
         tool_count = len(tools) if tools else 0
         option_keys = sorted(options.keys()) if options else []
+        request_snapshot: dict[str, Any] = {
+            "messages": _json_safe(messages),
+            "options": _json_safe(options) if options else {},
+        }
+        tool_payload: Sequence[Mapping[str, Any]] | None
+        if tools is not None:
+            tool_payload = tools
+        else:
+            tool_payload = self.tools_payload()
+        if tool_payload:
+            request_snapshot["tools"] = _json_safe(tool_payload)
+        self.last_request = request_snapshot
         logger.info(
             "Invoking LLM call run={} experiment={} strategy={} stage={} provider={} model={} messages={} tools={} option_keys={}",
             self.run_id or "n/a",
@@ -380,6 +399,26 @@ def iso_timestamp() -> str:
     """Return a consistent ISO-8601 timestamp in UTC."""
 
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _json_safe(value: Any) -> Any:
+    """Return a JSON-serializable clone of the provided value."""
+
+    if isinstance(value, MappingABC):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [_json_safe(item) for item in sorted(value, key=lambda item: repr(item))]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 __all__ = [

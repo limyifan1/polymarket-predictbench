@@ -31,6 +31,7 @@ from typing import Final
 from loguru import logger
 
 from .baseline import BaselineSnapshotSuite
+from .gemini import build_gemini_suite
 from .openai import build_openai_suite
 from .superforecaster import build_superforecaster_suite
 from .suites import BaseExperimentSuite
@@ -44,6 +45,7 @@ def _baseline_suite() -> BaseExperimentSuite:
 
 REGISTERED_SUITE_BUILDERS: Final[tuple[SuiteBuilder, ...]] = (
     _baseline_suite,
+    build_gemini_suite,
     build_openai_suite,
     build_superforecaster_suite,
 )
