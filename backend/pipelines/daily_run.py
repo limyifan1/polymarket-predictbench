@@ -891,6 +891,24 @@ def run_pipeline(
     if not args.no_debug_dump and args.debug_dump_dir:
         debug_dump_dir = Path(args.debug_dump_dir).expanduser().resolve()
         debug_dump_dir.mkdir(parents=True, exist_ok=True)
+    elif args.dry_run:
+        fallback_base = (
+            args.debug_dump_dir
+            or settings.pipeline_debug_dump_dir
+            or "./dry_run_outputs"
+        )
+        debug_dump_dir = Path(fallback_base).expanduser().resolve()
+        debug_dump_dir.mkdir(parents=True, exist_ok=True)
+        if args.no_debug_dump:
+            logger.info(
+                "Dry-run mode overriding --no-debug-dump; writing artifacts to {}",
+                debug_dump_dir,
+            )
+        else:
+            logger.info(
+                "Dry-run mode writing artifacts to {}",
+                debug_dump_dir,
+            )
 
     experiment_metas, experiment_meta_index = _prepare_experiment_metadata(suites)
 
