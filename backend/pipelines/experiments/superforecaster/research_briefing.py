@@ -63,9 +63,12 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
                             "maximum": 1,
                         },
                         "source": {"type": "string"},
-                        "notes": {"type": "string"},
+                        "notes": {
+                            "type": ["string", "null"],
+                            "description": "Any caveats or clarifying detail about the base rate",
+                        },
                     },
-                    "required": ["probability", "source"],
+                    "required": ["probability", "source", "notes"],
                     "additionalProperties": False,
                 },
                 "scenario_decomposition": {
@@ -80,9 +83,12 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
                                 "minimum": 0,
                                 "maximum": 1,
                             },
-                            "impact": {"type": "string"},
+                            "impact": {
+                                "type": ["string", "null"],
+                                "description": "What would happen if this scenario materialises",
+                            },
                         },
-                        "required": ["name", "description", "probability"],
+                        "required": ["name", "description", "probability", "impact"],
                         "additionalProperties": False,
                     },
                 },
@@ -96,10 +102,16 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
                         "type": "object",
                         "properties": {
                             "indicator": {"type": "string"},
-                            "threshold": {"type": "string"},
-                            "direction": {"type": "string"},
+                            "threshold": {
+                                "type": ["string", "null"],
+                                "description": "Condition or value that would prompt a reassessment",
+                            },
+                            "direction": {
+                                "type": ["string", "null"],
+                                "description": "How the indicator should move (e.g. up/down)",
+                            },
                         },
-                        "required": ["indicator"],
+                        "required": ["indicator", "threshold", "direction"],
                         "additionalProperties": False,
                     },
                 },
@@ -144,6 +156,11 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
             base_rate["probability"] = max(0.0, min(1.0, float(probability)))
         else:
             base_rate.pop("probability", None)
+        notes = base_rate.get("notes")
+        if isinstance(notes, str):
+            base_rate["notes"] = notes.strip()
+        else:
+            base_rate.pop("notes", None)
 
         for scenario in payload.get("scenario_decomposition", []):
             prob = scenario.get("probability")
@@ -151,6 +168,23 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
                 scenario["probability"] = max(0.0, min(1.0, float(prob)))
             else:
                 scenario.pop("probability", None)
+            impact = scenario.get("impact")
+            if isinstance(impact, str):
+                scenario["impact"] = impact.strip()
+            else:
+                scenario.pop("impact", None)
+
+        for trigger in payload.get("update_triggers", []):
+            threshold = trigger.get("threshold")
+            if isinstance(threshold, str):
+                trigger["threshold"] = threshold.strip()
+            else:
+                trigger.pop("threshold", None)
+            direction = trigger.get("direction")
+            if isinstance(direction, str):
+                trigger["direction"] = direction.strip()
+            else:
+                trigger.pop("direction", None)
 
         return payload
 
