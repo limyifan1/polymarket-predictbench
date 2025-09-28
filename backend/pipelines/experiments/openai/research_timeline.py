@@ -13,7 +13,7 @@ class HorizonSignalTimeline(StructuredLLMResearchStrategy):
     """Categorise catalysts into past and upcoming timelines."""
 
     name = "horizon_signal_timeline"
-    version = "0.1"
+    version = "0.2"
     description = "Categorised timeline of catalysts with impact annotations"
     default_tools: tuple[dict[str, Any], ...] | None = None
 
@@ -48,7 +48,12 @@ class HorizonSignalTimeline(StructuredLLMResearchStrategy):
                 "impact": {"type": "string"},
                 "notes": {"type": "string"},
             },
-            "required": ["title", "impact"],
+            # OpenAI's structured response schema enforcement requires every property
+            # to be listed in "required" once declared in "properties". The "notes"
+            # field is optional in our downstream usage, so we keep the schema simple
+            # by requiring it here and allowing the model to emit an empty string when
+            # there is nothing noteworthy to add.
+            "required": ["title", "date", "impact", "notes"],
             "additionalProperties": False,
         }
         schema = {
