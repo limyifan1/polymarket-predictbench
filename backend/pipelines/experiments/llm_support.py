@@ -10,6 +10,8 @@ from datetime import datetime
 from importlib import import_module
 from typing import Any, Callable, Mapping, Sequence
 
+from loguru import logger
+
 from app.services.llm import get_provider
 from app.services.llm.base import LLMProvider
 
@@ -25,6 +27,10 @@ class LLMRequestSpec:
     model: str
     provider: str
     provider_impl: LLMProvider
+    stage: str
+    experiment_name: str
+    strategy_name: str
+    run_id: str | None = None
     request_options: dict[str, Any] = field(default_factory=dict)
     tools: tuple[Mapping[str, Any], ...] | None = None
     overrides: Mapping[str, Any] = field(default_factory=dict)
@@ -81,12 +87,71 @@ class LLMRequestSpec:
         options: Mapping[str, Any] | None = None,
         tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> Any:
-        return self.provider_impl.invoke(
-            self,
-            messages=messages,
-            options=options,
-            tools=tools,
+        message_count = len(messages)
+        tool_count = len(tools) if tools else 0
+        option_keys = sorted(options.keys()) if options else []
+        logger.info(
+            "Invoking LLM call run={} experiment={} strategy={} stage={} provider={} model={} messages={} tools={} option_keys={}",
+            self.run_id or "n/a",
+            self.experiment_name,
+            self.strategy_name,
+            self.stage,
+            self.provider,
+            self.model,
+            message_count,
+            tool_count,
+            option_keys,
         )
+        try:
+            response = self.provider_impl.invoke(
+                self,
+                messages=messages,
+                options=options,
+                tools=tools,
+            )
+        except Exception:
+            logger.exception(
+                "LLM call failed run={} experiment={} strategy={} stage={} provider={} model={}",
+                self.run_id or "n/a",
+                self.experiment_name,
+                self.strategy_name,
+                self.stage,
+                self.provider,
+                self.model,
+            )
+            raise
+
+        usage_summary: Mapping[str, Any] | None = None
+        try:
+            usage_summary = self.provider_impl.usage_dict(response)
+        except Exception:
+            logger.debug(
+                "Failed to extract usage for LLM call run={} experiment={} strategy={} stage={}",
+                self.run_id or "n/a",
+                self.experiment_name,
+                self.strategy_name,
+                self.stage,
+            )
+
+        if usage_summary:
+            logger.info(
+                "LLM call completed run={} experiment={} strategy={} stage={} usage={}",
+                self.run_id or "n/a",
+                self.experiment_name,
+                self.strategy_name,
+                self.stage,
+                usage_summary,
+            )
+        else:
+            logger.info(
+                "LLM call completed run={} experiment={} strategy={} stage={} (no usage reported)",
+                self.run_id or "n/a",
+                self.experiment_name,
+                self.strategy_name,
+                self.stage,
+            )
+
+        return response
 
     def extract_json(self, response: Any) -> Mapping[str, Any]:
         return self.provider_impl.extract_json(response)
@@ -289,11 +354,17 @@ def resolve_llm_request(
         default_tools=default_tools,
     )
 
+    strategy_name = getattr(strategy, "name", experiment_name) or experiment_name
+
     return LLMRequestSpec(
         client=client,
         model=model,
         provider=provider_name,
         provider_impl=provider_impl,
+        stage=stage,
+        experiment_name=experiment_name,
+        strategy_name=str(strategy_name),
+        run_id=getattr(context, "run_id", None),
         request_options=request_options,
         tools=tools,
         overrides=overrides,
