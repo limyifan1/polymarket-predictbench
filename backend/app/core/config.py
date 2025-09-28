@@ -110,6 +110,17 @@ class Settings(BaseSettings):
         default=None,
         description="API key used for Gemini-powered research and forecasting",
     )
+    experiment_overrides: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Per-experiment overrides keyed by experiment name",
+    )
+
+    def experiment_config(self, experiment_name: str) -> dict[str, Any]:
+        base = dict(self.experiment_overrides.get("__default__", {}))
+        specific = self.experiment_overrides.get(experiment_name, {})
+        if specific:
+            base.update(specific)
+        return base
 
     @field_validator("pipeline_run_time_utc")
     @classmethod
@@ -118,7 +129,9 @@ class Settings(BaseSettings):
             raise ValueError("pipeline_run_time_utc must be formatted as HH:MM")
         hours, minutes = value.split(":", 1)
         if not (hours.isdigit() and minutes.isdigit()):
-            raise ValueError("pipeline_run_time_utc must contain numeric hour and minute")
+            raise ValueError(
+                "pipeline_run_time_utc must contain numeric hour and minute"
+            )
         hour_int = int(hours)
         minute_int = int(minutes)
         if not 0 <= hour_int < 24 or not 0 <= minute_int < 60:
