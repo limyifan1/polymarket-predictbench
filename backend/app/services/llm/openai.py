@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from openai import OpenAI
 
@@ -35,6 +35,56 @@ def _override_openai_client(settings: Settings, overrides: Mapping[str, Any]) ->
     if project:
         kwargs["project"] = project
     return OpenAI(**kwargs)
+
+
+def _has_type(schema: Mapping[str, Any], expected: str) -> bool:
+    """Return True when a JSON schema declares the expected type."""
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        return schema_type == expected
+    if isinstance(schema_type, Iterable):
+        return expected in schema_type  # type: ignore[arg-type]
+    return False
+
+
+def _validate_required_fields(
+    schema_name: str,
+    schema: Mapping[str, Any],
+    *,
+    parent_path: str = "",
+) -> None:
+    """Ensure OpenAI response schemas require every declared property.
+
+    OpenAI rejects schemas where an object lists properties that are missing from
+    the ``required`` array at the same nesting level. Validating locally provides
+    an actionable error before the request reaches the API.
+    """
+
+    if _has_type(schema, "object"):
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping) and properties:
+            required = schema.get("required")
+            if isinstance(required, Iterable) and not isinstance(required, (str, bytes)):
+                required_set = set(required)
+            else:
+                required_set = set()
+            missing = [key for key in properties if key not in required_set]
+            if missing:
+                location = parent_path or "<root>"
+                fields = ", ".join(sorted(missing))
+                raise ExperimentExecutionError(
+                    f"OpenAI JSON schema '{schema_name}' must mark properties {fields} as required at {location}"
+                )
+            for key, subschema in properties.items():
+                if isinstance(subschema, Mapping):
+                    next_path = f"{parent_path}.{key}" if parent_path else key
+                    _validate_required_fields(schema_name, subschema, parent_path=next_path)
+    if _has_type(schema, "array"):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            next_path = f"{parent_path}[]" if parent_path else "[]"
+            _validate_required_fields(schema_name, items, parent_path=next_path)
 
 
 @dataclass(slots=True)
@@ -100,6 +150,7 @@ class OpenAIProvider(LLMProvider):
         schema_name: str,
         schema: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        _validate_required_fields(schema_name, schema)
         structured = {
             "type": "json_schema",
             "name": schema_name,

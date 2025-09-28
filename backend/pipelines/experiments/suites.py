@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Generic, Sequence, TypeVar
 
@@ -16,6 +17,10 @@ class StrategyFactory(Generic[_StrategyT]):
     """Lightweight callable wrapper that normalises strategy builders."""
 
     builder: Callable[[], _StrategyT]
+    overrides: Mapping[str, Any] | None = None
+    alias: str | None = None
+    version: str | None = None
+    description: str | None = None
 
     def __call__(self) -> _StrategyT:
         strategy = self.builder()
@@ -25,6 +30,12 @@ class StrategyFactory(Generic[_StrategyT]):
                 f"{strategy!r}"
             )
             raise TypeError(msg)
+        if self.alias:
+            setattr(strategy, "name", self.alias)
+        if self.version:
+            setattr(strategy, "version", self.version)
+        if self.description:
+            setattr(strategy, "description", self.description)
         return strategy
 
 
@@ -38,6 +49,10 @@ def strategy(
     target: Any,
     /,
     *args: Any,
+    alias: str | None = None,
+    version: str | None = None,
+    description: str | None = None,
+    overrides: Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> StrategyFactory[Any]:
     """Return a factory that instantiates strategy instances on demand.
@@ -57,13 +72,25 @@ def strategy(
         def _builder() -> Any:
             return target(*args, **kwargs)
 
-        return StrategyFactory(builder=_builder)
+        return StrategyFactory(
+            builder=_builder,
+            overrides=dict(overrides) if overrides else None,
+            alias=alias,
+            version=version,
+            description=description,
+        )
 
     if callable(target) and not _is_strategy_instance(target):
         def _builder_callable() -> Any:
             return target(*args, **kwargs)
 
-        return StrategyFactory(builder=_builder_callable)
+        return StrategyFactory(
+            builder=_builder_callable,
+            overrides=dict(overrides) if overrides else None,
+            alias=alias,
+            version=version,
+            description=description,
+        )
 
     if args or kwargs:
         raise TypeError(
@@ -73,7 +100,13 @@ def strategy(
     def _builder_instance() -> Any:
         return target
 
-    return StrategyFactory(builder=_builder_instance)
+    return StrategyFactory(
+        builder=_builder_instance,
+        overrides=dict(overrides) if overrides else None,
+        alias=alias,
+        version=version,
+        description=description,
+    )
 
 
 @dataclass(slots=True)
@@ -159,6 +192,11 @@ class BaseExperimentSuite:
             )
         return descriptors
 
+    def experiment_overrides(self) -> Mapping[str, Mapping[str, Any]]:
+        """Return per-experiment default overrides supplied by the suite."""
+
+        return {}
+
 
 class DeclarativeExperimentSuite(BaseExperimentSuite):
     """A suite that reads its inventory from declarative factories."""
@@ -191,12 +229,26 @@ class DeclarativeExperimentSuite(BaseExperimentSuite):
             else tuple(self.forecast_factories)
         )
         super().__init__()
+        self._experiment_overrides: dict[str, dict[str, Any]] = self._collect_experiment_overrides()
 
     def _build_research_strategies(self) -> Sequence[ResearchStrategy]:
         return tuple(factory() for factory in self._research_factories)
 
     def _build_forecast_strategies(self) -> Sequence[ForecastStrategy]:
         return tuple(factory() for factory in self._forecast_factories)
+
+    def _collect_experiment_overrides(self) -> dict[str, dict[str, Any]]:
+        overrides: dict[str, dict[str, Any]] = {}
+        for factory, strategy in zip(self._research_factories, self._inventory.research):
+            if factory.overrides:
+                overrides[self.experiment_name(ExperimentStage.RESEARCH, strategy.name)] = dict(factory.overrides)
+        for factory, strategy in zip(self._forecast_factories, self._inventory.forecasts):
+            if factory.overrides:
+                overrides[self.experiment_name(ExperimentStage.FORECAST, strategy.name)] = dict(factory.overrides)
+        return overrides
+
+    def experiment_overrides(self) -> Mapping[str, Mapping[str, Any]]:
+        return self._experiment_overrides
 
 
 def suite(

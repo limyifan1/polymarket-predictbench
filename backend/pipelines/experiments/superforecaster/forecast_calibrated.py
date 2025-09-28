@@ -58,7 +58,13 @@ def _forecast_schema(market: NormalizedMarket) -> tuple[str, dict[str, Any]]:
             },
             "calibration_notes": {"type": "string"},
         },
-        "required": ["outcomes", "market_view", "confidence"],
+        "required": [
+            "outcomes",
+            "market_view",
+            "confidence",
+            "monitoring_plan",
+            "calibration_notes",
+        ],
         "additionalProperties": False,
     }
     schema_name = f"SuperforecasterForecast_{market.market_id}"
@@ -81,13 +87,8 @@ def _base_rate_map(market: NormalizedMarket) -> dict[str, float]:
     contracts = list(market.contracts)
     if not contracts:
         return {}
-    explicit = {
-        contract.name: _clamp_probability(contract.current_price) for contract in contracts
-    }
-    if any(value is None for value in explicit.values()):
-        fallback = 1.0 / len(contracts)
-        return {name: (value if value is not None else fallback) for name, value in explicit.items()}
-    return explicit  # type: ignore[return-value]
+    uniform_probability = 1.0 / len(contracts)
+    return {contract.name: uniform_probability for contract in contracts}
 
 
 def _normalize(probabilities: Mapping[str, float]) -> dict[str, float]:
@@ -111,11 +112,7 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
     version = "0.1"
     description = "Superforecaster-inspired prompt with base-rate regression"
     requires: Sequence[str] = ("superforecaster_briefing",)
-    optional_research: Sequence[str] = (
-        "openai_web_search",
-        "atlas_research_sweep",
-        "horizon_signal_timeline",
-    )
+    optional_research: Sequence[str] = ()
     default_model: str | None = DEFAULT_FORECAST_MODEL
     default_request_options: Mapping[str, Any] | None = None
     require_api_key: bool = True
@@ -142,14 +139,16 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             f"{name}:\n{json.dumps(payload, indent=2, ensure_ascii=False)}"
             for name, payload in supplemental_research
         ]
-        supplemental_text = "\n\n".join(supplemental_chunks) if supplemental_chunks else "(none)"
+        supplemental_text = (
+            "\n\n".join(supplemental_chunks) if supplemental_chunks else "(none)"
+        )
         system = (
             "You are a disciplined superforecaster. Anchor to the base rate, incorporate scenario "
             "analysis, and make explicit, numerically calibrated probability updates."
         )
         user = (
             "Market details:\n"
-            f"{_format_market(market)}"
+            f"{_format_market(market, include_contract_prices=False)}"
             "\n\nSuperforecaster briefing JSON:\n"
             f"{briefing_json}"
             "\n\nAdditional research artifacts:\n"
@@ -158,7 +157,8 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             "1. Start from the base rate in the briefing and adjust using the scenarios.\n"
             "2. Explain how each adjustment changes the odds. Reference evidence or monitoring triggers.\n"
             "3. Output calibrated probabilities (0-1) for every outcome that sum to 1.\n"
-            "4. Provide a concise market_view narrative and list key monitoring actions."
+            "4. Provide a concise market_view narrative, a Low/Medium/High confidence rating, and key monitoring actions in a list.\n"
+            "5. Capture any calibration adjustments or caveats in calibration_notes."
         )
         return [
             {"role": "system", "content": system},
@@ -204,7 +204,10 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
         outputs: list[ForecastOutput] = []
         for market in group.markets:
             if not market.contracts:
-                logger.info("Market %s has no contracts; skipping superforecaster forecast", market.market_id)
+                logger.info(
+                    "Market %s has no contracts; skipping superforecaster forecast",
+                    market.market_id,
+                )
                 continue
 
             schema_name, schema = _forecast_schema(market)
@@ -245,12 +248,15 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
                     blended[outcome] = base_rate
                 else:
                     blended[outcome] = (
-                        self.model_weight * model_prob + self.base_rate_weight * base_rate
+                        self.model_weight * model_prob
+                        + self.base_rate_weight * base_rate
                     )
             normalized = _normalize(blended) if blended else {}
 
             monitoring_plan = payload.get("monitoring_plan")
-            monitoring_text = _format_monitoring(monitoring_plan if isinstance(monitoring_plan, list) else None)
+            monitoring_text = _format_monitoring(
+                monitoring_plan if isinstance(monitoring_plan, list) else None
+            )
 
             reasoning_sections: list[str] = []
             market_view = payload.get("market_view")
@@ -259,16 +265,23 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             if rationales:
                 reasoning_sections.append("Key rationales:\n" + "\n".join(rationales))
             if base_rates:
-                anchor = ", ".join(f"{name}={value:.2f}" for name, value in base_rates.items())
+                anchor = ", ".join(
+                    f"{name}={value:.2f}" for name, value in base_rates.items()
+                )
                 reasoning_sections.append(
                     f"Probabilities regressed 40% toward base-rate anchor ({anchor}) to mirror superforecaster calibration."
                 )
             calibration_notes = payload.get("calibration_notes")
             if isinstance(calibration_notes, str) and calibration_notes.strip():
-                reasoning_sections.append(f"Calibration notes: {calibration_notes.strip()}")
+                reasoning_sections.append(
+                    f"Calibration notes: {calibration_notes.strip()}"
+                )
             if monitoring_text:
                 reasoning_sections.append("Monitoring plan:\n" + monitoring_text)
-            reasoning = "\n\n".join(reasoning_sections) or "Superforecaster-calibrated forecast."
+            reasoning = (
+                "\n\n".join(reasoning_sections)
+                or "Superforecaster-calibrated forecast."
+            )
 
             diagnostics = runtime.diagnostics(
                 usage=runtime.usage_dict(response),

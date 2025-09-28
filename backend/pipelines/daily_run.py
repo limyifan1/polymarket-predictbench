@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager, FrozenSet, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, Callable, ContextManager, FrozenSet
 from uuid import uuid4
 
 from loguru import logger
@@ -276,6 +278,27 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print the configured experiment manifest and exit",
     )
+    parser.add_argument(
+        "--experiment-override",
+        action="append",
+        default=None,
+        metavar="EXPERIMENT.KEY=VALUE",
+        help=(
+            "Apply an experiment-specific override (repeatable). "
+            "EXPERIMENT matches suite:stage:strategy, e.g. "
+            "openai:research:openai_web_search.model=gpt-4.1-mini"
+        ),
+    )
+    parser.add_argument(
+        "--experiment-override-file",
+        action="append",
+        default=None,
+        type=Path,
+        help=(
+            "Path to a JSON file containing experiment overrides keyed by "
+            "experiment name (repeatable)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -397,6 +420,150 @@ def _parse_variant_filter(raw: str | None) -> set[str]:
     if not raw:
         return set()
     return {item.strip() for item in raw.split(',') if item.strip()}
+
+
+def _coerce_override_value(raw: str) -> Any:
+    """Return a Python value for a CLI override payload."""
+
+    text = raw.strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "null":
+        return None
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return text
+
+
+def _set_nested_override(target: dict[str, Any], key_path: str, value: Any) -> None:
+    parts = [segment.strip() for segment in key_path.split('.') if segment.strip()]
+    if not parts:
+        raise ValueError("Override key path cannot be empty")
+
+    current: dict[str, Any] = target
+    for segment in parts[:-1]:
+        next_value = current.get(segment)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[segment] = next_value
+        current = next_value
+    current[parts[-1]] = value
+
+
+def _merge_override_mapping(destination: dict[str, Any], updates: Mapping[str, Any]) -> None:
+    for key, value in updates.items():
+        if isinstance(value, Mapping) and isinstance(destination.get(key), dict):
+            nested = destination[key]
+            _merge_override_mapping(nested, value)  # type: ignore[arg-type]
+        elif isinstance(value, Mapping):
+            destination[key] = dict(value)
+        else:
+            destination[key] = value
+
+
+def _parse_experiment_override_spec(spec: str) -> tuple[str, str, Any]:
+    if '=' not in spec:
+        raise ValueError("Override must be formatted as EXPERIMENT.KEY=VALUE")
+    target, raw_value = spec.split('=', 1)
+    if '.' not in target:
+        raise ValueError("Override target must include a key path separated by '.'")
+    experiment, key_path = target.split('.', 1)
+    experiment = experiment.strip()
+    key_path = key_path.strip()
+    if not experiment or not key_path:
+        raise ValueError("Experiment and key path must be non-empty")
+    value = _coerce_override_value(raw_value)
+    return experiment, key_path, value
+
+
+def _load_experiment_override_file(path: Path) -> dict[str, dict[str, Any]]:
+    path = path.expanduser()
+    try:
+        raw = path.read_text(encoding='utf-8')
+    except FileNotFoundError as exc:
+        raise ValueError(f"Experiment override file not found: {path}") from exc
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Experiment override file {path} is not valid JSON: {exc}") from exc
+    if not isinstance(loaded, Mapping):
+        raise ValueError(f"Experiment override file {path} must contain a mapping")
+    result: dict[str, dict[str, Any]] = {}
+    for experiment, config in loaded.items():
+        if not isinstance(config, Mapping):
+            raise ValueError(
+                f"Experiment override for '{experiment}' in {path} must be a mapping"
+            )
+        result[str(experiment)] = dict(config)
+    return result
+
+
+def _collect_cli_experiment_overrides(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
+    overrides: dict[str, dict[str, Any]] = {}
+    file_paths: Sequence[Path] = args.experiment_override_file or []
+    for path in file_paths:
+        file_overrides = _load_experiment_override_file(path)
+        for experiment, config in file_overrides.items():
+            bucket = overrides.setdefault(experiment, {})
+            _merge_override_mapping(bucket, config)
+
+    inline_specs: Sequence[str] = args.experiment_override or []
+    for spec in inline_specs:
+        if not spec:
+            continue
+        try:
+            experiment, key_path, value = _parse_experiment_override_spec(spec)
+        except ValueError as exc:
+            raise ValueError(f"Invalid --experiment-override '{spec}': {exc}") from exc
+        bucket = overrides.setdefault(experiment, {})
+        _set_nested_override(bucket, key_path, value)
+
+    return overrides
+
+
+def _apply_suite_experiment_overrides(
+    *,
+    settings: Settings,
+    suites: Sequence[BaseExperimentSuite],
+) -> dict[str, dict[str, Any]]:
+    overrides: dict[str, dict[str, Any]] = {}
+    for suite in suites:
+        for experiment, config in suite.experiment_overrides().items():
+            bucket = overrides.setdefault(experiment, {})
+            _merge_override_mapping(bucket, config)
+
+    if not overrides:
+        return {}
+
+    merged = dict(settings.experiment_overrides)
+    for experiment, config in overrides.items():
+        bucket = merged.setdefault(experiment, {})
+        _merge_override_mapping(bucket, config)
+    settings.experiment_overrides = merged
+    return overrides
+
+
+def _apply_cli_experiment_overrides(
+    *,
+    settings: Settings,
+    args: argparse.Namespace,
+) -> dict[str, dict[str, Any]]:
+    overrides = _collect_cli_experiment_overrides(args)
+    if not overrides:
+        return {}
+
+    merged = dict(settings.experiment_overrides)
+    for experiment, config in overrides.items():
+        bucket = merged.setdefault(experiment, {})
+        _merge_override_mapping(bucket, config)
+    settings.experiment_overrides = merged
+    return overrides
 
 
 def _serialize_event(event: NormalizedEvent | None) -> dict[str, Any] | None:
@@ -1308,6 +1475,24 @@ def main() -> None:
     args = _parse_args()
     settings = get_settings()
     suites = tuple(load_suites(args.suite))
+    suite_overrides = _apply_suite_experiment_overrides(settings=settings, suites=suites)
+    if suite_overrides:
+        for experiment, config in suite_overrides.items():
+            key_summary = ', '.join(sorted(config.keys())) or '<no keys>'
+            logger.info(
+                "Applied suite experiment overrides for {} (keys: {})",
+                experiment,
+                key_summary,
+            )
+    cli_overrides = _apply_cli_experiment_overrides(settings=settings, args=args)
+    if cli_overrides:
+        for experiment, config in cli_overrides.items():
+            key_summary = ', '.join(sorted(config.keys())) or '<no keys>'
+            logger.info(
+                "Applied CLI experiment overrides for {} (keys: {})",
+                experiment,
+                key_summary,
+            )
     stage_config = _resolve_stage_config(args)
 
     if args.list_experiments:

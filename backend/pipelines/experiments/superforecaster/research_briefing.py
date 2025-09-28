@@ -33,8 +33,8 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
         return (
             "Review the market group information and craft a structured planning brief. "
             "Follow superforecaster best practices: identify an appropriate reference class, "
-            "quantify an outside-view base rate, break the question into key scenarios, and "
-            "list concrete indicators you will monitor to update the forecast."
+            "quantify an outside-view base rate, surface key uncertainties, break the question "
+            "into scenarios, and list concrete indicators you will monitor to update the forecast."
             "\n\nContext:\n"
             f"{_format_event_context(group)}"
         )
@@ -125,6 +125,7 @@ class SuperforecasterBriefingResearch(StructuredLLMResearchStrategy):
                 "reference_class",
                 "base_rate",
                 "scenario_decomposition",
+                "key_uncertainties",
                 "update_triggers",
                 "confidence",
                 "generated_at",

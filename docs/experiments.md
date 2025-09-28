@@ -42,6 +42,37 @@ baseline_suite = suite(
 suite instantiation creates fresh strategy objects, so they remain stateless
 between runs.
 
+#### Strategy variants & overrides
+- Pass `alias` to `strategy(...)` to rename a variant without subclassing. This
+  keeps names unique when you want multiple versions of the same class in one
+  suite (`alias="gpt41_forecast"`).
+- Override metadata inline with `version=` / `description=` when the variant
+  deviates from the base prompt or model choice.
+- Supply `overrides={...}` to bake provider/model tweaks into the suite. The
+  mapping is stored under the experiment's full name
+  (`suite:stage:strategy`) and fed to `resolve_llm_request`, so you can swap
+  models or request options without touching `.env`.
+- Example snippet:
+
+  ```python
+  openai_suite = suite(
+      "openai",
+      research=(strategy(OpenAIWebSearchResearch),),
+      forecasts=(
+          strategy(GPT5ForecastStrategy),
+          strategy(
+              GPT5ForecastStrategy,
+              alias="gpt41_forecast",
+              version="0.2-gpt4.1",
+              overrides={"model": "gpt-4.1"},
+          ),
+      ),
+  )
+  ```
+
+  The pipeline now runs two forecast variants side-by-side; `gpt41_forecast`
+  automatically receives the GPT‑4.1 override during execution.
+
 ### Custom suites
 Subclass `DeclarativeExperimentSuite` when you need additional logic (shared
 helpers, dynamic strategy wiring) or fall back to overriding the `_build_*`
@@ -76,6 +107,32 @@ Provider abstractions live in `backend/app/services/llm/`.
 - When switching providers, review default tools: Gemini does not enable web
   search tooling by default, so strategies requiring search should opt out or
   provide provider-specific overrides.
+
+### Per-run overrides for ablations
+- Use `--experiment-override` on the pipeline CLI to swap models or tweak
+  request options without touching `.env`. Experiments use the pattern
+  `suite:stage:strategy.key=value`, so running a research variant on GPT-4.1
+  looks like:
+
+  ```bash
+  uv run python -m pipelines.daily_run --dry-run --limit 5 \
+    --experiment-override openai:research:openai_web_search.model="gpt-4.1-mini"
+  ```
+
+- Repeat the flag to override multiple strategies in a single run. Nested keys
+  are supported (`request_options.temperature=0.4`).
+- Store larger matrices of overrides in JSON and load them with
+  `--experiment-override-file overrides.json`:
+
+  ```json
+  {
+    "openai:research:openai_web_search": {"model": "gpt-4o-mini"},
+    "openai:forecast:gpt5_forecast": {"model": "gpt-4.1"}
+  }
+  ```
+
+- Combine these flags with `--suite`/`--include-*` to iterate through model
+  ablations quickly while reusing the same strategy code.
 
 ## Adding a new strategy
 1. Implement `ResearchStrategy` or `ForecastStrategy` subclass with descriptive

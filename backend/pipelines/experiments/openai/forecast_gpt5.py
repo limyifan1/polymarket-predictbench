@@ -99,7 +99,7 @@ class GPT5ForecastStrategy(ForecastStrategy):
         user = (
             "Produce probabilities that sum to 1 for the market's outcomes. Reference the research evidence in your rationale."
             "\n\nMarket context:\n"
-            f"{_format_market(market)}"
+            f"{_format_market(market, include_contract_prices=False)}"
             "\n\nResearch context:\n"
             f"{combined_context if combined_context else 'No research supplied.'}"
         )

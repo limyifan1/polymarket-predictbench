@@ -60,7 +60,11 @@ def _format_event(event: NormalizedEvent | None) -> str:
     return "\n".join(details)
 
 
-def _format_market(market: NormalizedMarket) -> str:
+def _format_market(
+    market: NormalizedMarket,
+    *,
+    include_contract_prices: bool = True,
+) -> str:
     lines = [
         f"Market: {market.question}",
         f"Status: {market.status} (closes {market.close_time.isoformat() if market.close_time else 'unknown'})",
@@ -70,10 +74,15 @@ def _format_market(market: NormalizedMarket) -> str:
     if market.contracts:
         lines.append("Outcomes:")
         for contract in market.contracts:
-            price = (
-                f"{contract.current_price:.2f}" if isinstance(contract.current_price, (int, float)) else "unknown"
-            )
-            lines.append(f"- {contract.name}: price={price}")
+            if include_contract_prices:
+                price = (
+                    f"{contract.current_price:.2f}"
+                    if isinstance(contract.current_price, (int, float))
+                    else "unknown"
+                )
+                lines.append(f"- {contract.name}: price={price}")
+            else:
+                lines.append(f"- {contract.name}")
     return "\n".join(lines)
 
 
@@ -193,15 +202,21 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
         messages = [
             {
                 "role": "system",
-                "content": self.system_prompt(group=group, context=context, runtime=runtime),
+                "content": self.system_prompt(
+                    group=group, context=context, runtime=runtime
+                ),
             },
             {
                 "role": "user",
-                "content": self.build_user_prompt(group, context=context, runtime=runtime),
+                "content": self.build_user_prompt(
+                    group, context=context, runtime=runtime
+                ),
             },
         ]
         options = dict(request_kwargs)
-        extra_options = self.extra_request_options(group, context=context, runtime=runtime)
+        extra_options = self.extra_request_options(
+            group, context=context, runtime=runtime
+        )
         if extra_options:
             options.update(extra_options)
 
@@ -233,4 +248,6 @@ class StructuredLLMResearchStrategy(ResearchStrategy):
             ),
         )
         artifact_hash = hash_payload(artifact)
-        return ResearchOutput(payload=artifact, artifact_hash=artifact_hash, diagnostics=diagnostics)
+        return ResearchOutput(
+            payload=artifact, artifact_hash=artifact_hash, diagnostics=diagnostics
+        )

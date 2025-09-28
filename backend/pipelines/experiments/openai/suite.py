@@ -21,7 +21,22 @@ def build_openai_suite() -> BaseExperimentSuite:
             strategy(AtlasResearchSweep),
             strategy(HorizonSignalTimeline),
         ),
-        forecasts=(strategy(GPT5ForecastStrategy),),
+        forecasts=(
+            strategy(
+                GPT5ForecastStrategy,
+                alias="gpt41_forecast",
+                version="0.2-gpt4.1",
+                description="JSON-mode forecast prompt using GPT-4.1 preview",
+                overrides={"model": "gpt-4.1"},
+            ),
+            strategy(
+                GPT5ForecastStrategy,
+                alias="gpt5mini_forecast",
+                version="0.2-gpt5mini",
+                description="JSON-mode forecast prompt using GPT-5 mini",
+                overrides={"model": "gpt-5-mini"},
+            ),
+        ),
     )
 
 
