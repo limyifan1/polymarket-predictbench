@@ -33,6 +33,7 @@ def pipeline_args(tmp_path) -> argparse.Namespace:
         summary_path=tmp_path / "summary.json",
         debug_dump_dir=None,
         no_debug_dump=True,
+        event_batch_size=1,
     )
 
 

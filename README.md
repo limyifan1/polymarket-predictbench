@@ -60,6 +60,7 @@ publish daily snapshots.
 | Run pipeline for a specific date | `uv run python -m pipelines.daily_run --target-date 2025-01-15` |
 | Restrict to certain suites | `uv run python -m pipelines.daily_run --suite baseline --suite openai` |
 | Produce a summary artifact | `uv run python -m pipelines.daily_run --summary-path ../summary.json` |
+| Tune event concurrency | `uv run python -m pipelines.daily_run --event-batch-size 8` (default `PIPELINE_EVENT_BATCH_SIZE`=4) |
 | Launch FastAPI with reload | `uv run uvicorn app.main:app --reload --port 8000` |
 | Start the dashboard | `cd frontend && npm run dev` |
 

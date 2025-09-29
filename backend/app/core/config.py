@@ -86,6 +86,11 @@ class Settings(BaseSettings):
         default="../debug_dumps",
         description="Default directory where pipeline debug dumps are written (set blank to disable)",
     )
+    pipeline_event_batch_size: int = Field(
+        default=10,
+        description="Number of event groups processed concurrently during the daily pipeline",
+        ge=1,
+    )
     llm_default_provider: str = Field(
         default="openai",
         description="Fallback provider used when strategies do not override the provider name",
@@ -190,7 +195,9 @@ class Settings(BaseSettings):
             candidate = value.strip()
             if not candidate:
                 return []
-            return [item for item in (part.strip() for part in candidate.split(",")) if item]
+            return [
+                item for item in (part.strip() for part in candidate.split(",")) if item
+            ]
         if isinstance(value, (list, tuple, set)):
             return [str(item).strip() for item in value if str(item).strip()]
         raise ValueError(

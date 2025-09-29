@@ -36,6 +36,7 @@ All commands assume you are inside `backend/` with dependencies installed and
 | Focus on variants | `uv run python -m pipelines.daily_run --include-forecast gpt5` | Accepts comma-separated variant names or `suite:variant` identifiers. |
 | Generate summary artifact | `uv run python -m pipelines.daily_run --summary-path ../summary.json` | Writes JSON with counts, failures, and per-suite stats. |
 | Capture payload dumps | `uv run python -m pipelines.daily_run --debug-dump-dir ../debug-dumps` | Stores research/forecast request-response JSON per event. |
+| Batch events concurrently | `uv run python -m pipelines.daily_run --event-batch-size 8` | Overrides `PIPELINE_EVENT_BATCH_SIZE` (default 4). |
 
 ## Key CLI flags
 - `--window-days <int>` – forward-looking horizon for market close dates.
@@ -45,6 +46,7 @@ All commands assume you are inside `backend/` with dependencies installed and
 - `--suite <id>` – run only the specified suites (repeatable).
 - `--stage {research,forecast,both}` – restrict execution to part of the
   pipeline.
+- `--event-batch-size <int>` – number of event groups processed together (defaults to `PIPELINE_EVENT_BATCH_SIZE`).
 - `--include-research` / `--include-forecast` – comma-separated variant names to
   whitelist.
 - `--debug-dump-dir <path>` – override where JSON dumps land; use
