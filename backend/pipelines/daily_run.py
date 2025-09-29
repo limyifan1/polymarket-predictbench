@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
@@ -15,9 +16,11 @@ from typing import Any, Callable, ContextManager, FrozenSet
 from uuid import uuid4
 
 from loguru import logger
+from sqlalchemy.exc import DBAPIError
 
 from app.core.config import Settings, get_settings
 from app.db import init_db
+from app.repositories import MarketRepository, ProcessingRepository
 from app.repositories.pipeline_models import (
     ExperimentResultInput,
     ExperimentRunInput,
@@ -26,14 +29,13 @@ from app.repositories.pipeline_models import (
     ProcessedMarketInput,
     ResearchArtifactInput,
 )
-from app.repositories import MarketRepository, ProcessingRepository
 from app.domain import NormalizedEvent, NormalizedMarket
 from ingestion.client import PolymarketClient
 from ingestion.normalize import normalize_market
 from ingestion.service import session_scope
 
-from .context import PipelineContext
 from app.models import ExperimentStage
+from .context import PipelineContext
 
 from .experiments.base import (
     EventMarketGroup,
@@ -47,6 +49,28 @@ from .experiments.base import (
 from .experiments.manifest import build_manifest
 from .experiments.registry import load_suites
 from .experiments.suites import BaseExperimentSuite
+
+_DEFAULT_DB_WRITE_ATTEMPTS = 3
+_DEFAULT_DB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+
+
+def _is_retriable_db_error(exc: DBAPIError) -> bool:
+    if getattr(exc, "connection_invalidated", False):
+        return True
+
+    original = getattr(exc, "orig", exc)
+    message = str(original).lower()
+    retriable_markers = (
+        "ssl syscall error",
+        "connection reset by peer",
+        "server conn crashed",
+        "could not receive data from server",
+        "server closed the connection unexpectedly",
+        "terminating connection due to administrator command",
+        "connection not open",
+        "read failed",
+    )
+    return any(marker in message for marker in retriable_markers)
 
 
 @dataclass(slots=True)
@@ -1121,6 +1145,17 @@ def run_pipeline(
         set(stage_config.enabled_forecast) if stage_config.enabled_forecast else None
     )
 
+    db_retry_attempts = max(
+        1, getattr(settings, "pipeline_db_retry_attempts", _DEFAULT_DB_WRITE_ATTEMPTS)
+    )
+    db_retry_backoff = getattr(
+        settings,
+        "pipeline_db_retry_backoff_schedule",
+        _DEFAULT_DB_RETRY_BACKOFF_SECONDS,
+    )
+    if not db_retry_backoff:
+        db_retry_backoff = _DEFAULT_DB_RETRY_BACKOFF_SECONDS
+
     if session_factory is None:
         init_db_fn()
         session_factory = session_scope
@@ -1434,126 +1469,145 @@ def run_pipeline(
                 if args.dry_run:
                     continue
 
-                with session_factory() as session:
-                    processing_repo = processing_repo_factory(session)
-                    market_repo = market_repo_factory(session)
+                for attempt in range(1, db_retry_attempts + 1):
+                    try:
+                        with session_factory() as session:
+                            processing_repo = processing_repo_factory(session)
+                            market_repo = market_repo_factory(session)
 
-                    processed_event = processing_repo.record_processed_event(
-                        ProcessedEventInput(
-                            processed_event_id=str(uuid4()),
-                            run_id=run_id,
-                            event_id=event_payload.event_id if event_payload else None,
-                            event_slug=event_payload.slug if event_payload else None,
-                            event_title=event_payload.title if event_payload else None,
-                            raw_snapshot=event_payload.raw_data if event_payload else None,
-                        )
-                    )
-
-                    market_to_processed: dict[str, str] = {}
-
-                    for market in markets:
-                        processed_market = processing_repo.record_processed_market(
-                            ProcessedMarketInput(
-                                processed_market_id=str(uuid4()),
-                                run_id=run_id,
-                                market_id=market.market_id,
-                                market_slug=market.slug,
-                                question=market.question,
-                                close_time=market.close_time,
-                                raw_snapshot=market.raw_data,
-                                processed_event_id=processed_event.processed_event_id,
-                                contracts=_convert_contracts(market),
-                            )
-                        )
-                        market_to_processed[market.market_id] = (
-                            processed_market.processed_market_id
-                        )
-
-                        market_repo.upsert_market(market)
-
-                    for suite_id, records in suite_research_records.items():
-                        for variant_name, record in records.items():
-                            payload = _enrich_payload(
-                                record.output.payload,
-                                diagnostics=record.output.diagnostics,
-                            )
-                            artifact_hash = (
-                                record.output.artifact_hash
-                                or _compute_artifact_hash(payload)
-                            )
-                            artifact_id = str(uuid4())
-                            record.artifact_id = artifact_id
-                            processing_repo.record_research_artifact(
-                                ResearchArtifactInput(
-                                    artifact_id=artifact_id,
-                                    experiment_run_id=record.meta.run_identifier,
-                                    processed_market_id=None,
-                                    processed_event_id=processed_event.processed_event_id,
-                                    variant_name=record.meta.strategy_name,
-                                    variant_version=record.meta.strategy_version,
-                                    artifact_hash=artifact_hash,
-                                    payload=payload,
-                                    artifact_uri=record.output.artifact_uri,
-                                )
-                            )
-                            processing_repo.record_experiment_result(
-                                ExperimentResultInput(
-                                    experiment_run_id=record.meta.run_identifier,
-                                    processed_market_id=None,
-                                    processed_event_id=processed_event.processed_event_id,
-                                    stage=ExperimentStage.RESEARCH.value,
-                                    variant_name=record.meta.strategy_name,
-                                    variant_version=record.meta.strategy_version,
-                                    source_artifact_id=artifact_id,
-                                    payload=payload,
-                                    score=None,
-                                    artifact_uri=record.output.artifact_uri,
+                            processed_event = processing_repo.record_processed_event(
+                                ProcessedEventInput(
+                                    processed_event_id=str(uuid4()),
+                                    run_id=run_id,
+                                    event_id=event_payload.event_id if event_payload else None,
+                                    event_slug=event_payload.slug if event_payload else None,
+                                    event_title=event_payload.title if event_payload else None,
+                                    raw_snapshot=event_payload.raw_data if event_payload else None,
                                 )
                             )
 
-                    for forecast_record in forecast_records:
-                        dependencies: dict[str, str] = {}
-                        suite_records = suite_research_records.get(
-                            forecast_record.meta.suite_id, {}
+                            market_to_processed: dict[str, str] = {}
+
+                            for market in markets:
+                                processed_market = processing_repo.record_processed_market(
+                                    ProcessedMarketInput(
+                                        processed_market_id=str(uuid4()),
+                                        run_id=run_id,
+                                        market_id=market.market_id,
+                                        market_slug=market.slug,
+                                        question=market.question,
+                                        close_time=market.close_time,
+                                        raw_snapshot=market.raw_data,
+                                        processed_event_id=processed_event.processed_event_id,
+                                        contracts=_convert_contracts(market),
+                                    )
+                                )
+                                market_to_processed[market.market_id] = (
+                                    processed_market.processed_market_id
+                                )
+
+                                market_repo.upsert_market(market)
+
+                            for suite_id, records in suite_research_records.items():
+                                for variant_name, record in records.items():
+                                    payload = _enrich_payload(
+                                        record.output.payload,
+                                        diagnostics=record.output.diagnostics,
+                                    )
+                                    artifact_hash = (
+                                        record.output.artifact_hash
+                                        or _compute_artifact_hash(payload)
+                                    )
+                                    artifact_id = str(uuid4())
+                                    record.artifact_id = artifact_id
+                                    processing_repo.record_research_artifact(
+                                        ResearchArtifactInput(
+                                            artifact_id=artifact_id,
+                                            experiment_run_id=record.meta.run_identifier,
+                                            processed_market_id=None,
+                                            processed_event_id=processed_event.processed_event_id,
+                                            variant_name=record.meta.strategy_name,
+                                            variant_version=record.meta.strategy_version,
+                                            artifact_hash=artifact_hash,
+                                            payload=payload,
+                                            artifact_uri=record.output.artifact_uri,
+                                        )
+                                    )
+                                    processing_repo.record_experiment_result(
+                                        ExperimentResultInput(
+                                            experiment_run_id=record.meta.run_identifier,
+                                            processed_market_id=None,
+                                            processed_event_id=processed_event.processed_event_id,
+                                            stage=ExperimentStage.RESEARCH.value,
+                                            variant_name=record.meta.strategy_name,
+                                            variant_version=record.meta.strategy_version,
+                                            source_artifact_id=artifact_id,
+                                            payload=payload,
+                                            score=None,
+                                            artifact_uri=record.output.artifact_uri,
+                                        )
+                                    )
+
+                            for forecast_record in forecast_records:
+                                dependencies: dict[str, str] = {}
+                                suite_records = suite_research_records.get(
+                                    forecast_record.meta.suite_id, {}
+                                )
+                                for dep in forecast_record.dependencies:
+                                    artifact = suite_records.get(dep)
+                                    if artifact and artifact.artifact_id:
+                                        dependencies[dep] = artifact.artifact_id
+                                primary_artifact_id = None
+                                if len(dependencies) == 1:
+                                    primary_artifact_id = next(iter(dependencies.values()))
+                                processed_market_id = market_to_processed.get(
+                                    forecast_record.output.market_id
+                                )
+                                if not processed_market_id:
+                                    logger.warning(
+                                        "Missing processed market mapping for forecast market {} -- skipping result",
+                                        forecast_record.output.market_id,
+                                    )
+                                    continue
+                                payload = _enrich_payload(
+                                    {
+                                        "outcomePrices": forecast_record.output.outcome_prices,
+                                        "reasoning": forecast_record.output.reasoning,
+                                    },
+                                    diagnostics=forecast_record.output.diagnostics,
+                                    references=dependencies if dependencies else None,
+                                )
+                                processing_repo.record_experiment_result(
+                                    ExperimentResultInput(
+                                        experiment_run_id=forecast_record.meta.run_identifier,
+                                        processed_market_id=processed_market_id,
+                                        processed_event_id=processed_event.processed_event_id,
+                                        stage=ExperimentStage.FORECAST.value,
+                                        variant_name=forecast_record.meta.strategy_name,
+                                        variant_version=forecast_record.meta.strategy_version,
+                                        source_artifact_id=primary_artifact_id,
+                                        payload=payload,
+                                        score=forecast_record.output.score,
+                                        artifact_uri=forecast_record.output.artifact_uri,
+                                    )
+                                )
+
+                        break
+                    except DBAPIError as exc:
+                        if not _is_retriable_db_error(exc) or attempt == db_retry_attempts:
+                            raise
+
+                        backoff_index = min(attempt - 1, len(db_retry_backoff) - 1)
+                        sleep_seconds = db_retry_backoff[backoff_index]
+                        logger.warning(
+                            "Database connection issue while persisting event group {} (attempt {}/{}); retrying in {}s",
+                            request.key,
+                            attempt,
+                            db_retry_attempts,
+                            sleep_seconds,
                         )
-                        for dep in forecast_record.dependencies:
-                            artifact = suite_records.get(dep)
-                            if artifact and artifact.artifact_id:
-                                dependencies[dep] = artifact.artifact_id
-                        primary_artifact_id = None
-                        if len(dependencies) == 1:
-                            primary_artifact_id = next(iter(dependencies.values()))
-                        processed_market_id = market_to_processed.get(
-                            forecast_record.output.market_id
-                        )
-                        if not processed_market_id:
-                            logger.warning(
-                                "Missing processed market mapping for forecast market {} -- skipping result",
-                                forecast_record.output.market_id,
-                            )
-                            continue
-                        payload = _enrich_payload(
-                            {
-                                "outcomePrices": forecast_record.output.outcome_prices,
-                                "reasoning": forecast_record.output.reasoning,
-                            },
-                            diagnostics=forecast_record.output.diagnostics,
-                            references=dependencies if dependencies else None,
-                        )
-                        processing_repo.record_experiment_result(
-                            ExperimentResultInput(
-                                experiment_run_id=forecast_record.meta.run_identifier,
-                                processed_market_id=processed_market_id,
-                                processed_event_id=processed_event.processed_event_id,
-                                stage=ExperimentStage.FORECAST.value,
-                                variant_name=forecast_record.meta.strategy_name,
-                                variant_version=forecast_record.meta.strategy_version,
-                                source_artifact_id=primary_artifact_id,
-                                payload=payload,
-                                score=forecast_record.output.score,
-                                artifact_uri=forecast_record.output.artifact_uri,
-                            )
-                        )
+                        logger.debug("Retryable database error details: {}", exc)
+                        time.sleep(sleep_seconds)
 
     finally:
         if hasattr(client, "close"):

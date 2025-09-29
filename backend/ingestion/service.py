@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -37,6 +38,15 @@ def session_scope() -> Session:
     try:
         yield session
         session.commit()
+    except DBAPIError as exc:
+        session.rollback()
+        bind = session.get_bind()
+        if bind is not None:
+            logger.warning(
+                "Disposing SQLAlchemy engine after DBAPIError: {}", exc
+            )
+            bind.dispose()
+        raise
     except Exception:
         session.rollback()
         raise

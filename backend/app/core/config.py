@@ -91,6 +91,15 @@ class Settings(BaseSettings):
         description="Number of event groups processed concurrently during the daily pipeline",
         ge=1,
     )
+    pipeline_db_retry_attempts: int = Field(
+        default=3,
+        description="Number of attempts to retry pipeline database writes when transient errors occur",
+        ge=1,
+    )
+    pipeline_db_retry_backoff_seconds: list[float] | tuple[float, ...] | str = Field(
+        default_factory=lambda: [1.0, 2.0, 4.0],
+        description="Comma-separated list or array of backoff delays (seconds) between database retry attempts",
+    )
     llm_default_provider: str = Field(
         default="openai",
         description="Fallback provider used when strategies do not override the provider name",
@@ -204,6 +213,33 @@ class Settings(BaseSettings):
             "GEMINI_ADDITIONAL_API_KEYS must be provided as a list or comma-separated string"
         )
 
+    @field_validator("pipeline_db_retry_backoff_seconds", mode="before")
+    @classmethod
+    def _parse_retry_backoff(cls, value: Any) -> list[float]:
+        if value in (None, "", []):
+            return [1.0, 2.0, 4.0]
+        if isinstance(value, str):
+            tokens = [token.strip() for token in value.split(",") if token.strip()]
+            if not tokens:
+                raise ValueError("PIPELINE_DB_RETRY_BACKOFF_SECONDS must contain at least one value")
+            value = tokens
+        if isinstance(value, (list, tuple)):
+            backoff: list[float] = []
+            for item in value:
+                try:
+                    delay = float(item)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("PIPELINE_DB_RETRY_BACKOFF_SECONDS entries must be numeric") from exc
+                if delay <= 0:
+                    raise ValueError("PIPELINE_DB_RETRY_BACKOFF_SECONDS entries must be positive")
+                backoff.append(delay)
+            if not backoff:
+                raise ValueError("PIPELINE_DB_RETRY_BACKOFF_SECONDS must contain at least one value")
+            return backoff
+        raise ValueError(
+            "PIPELINE_DB_RETRY_BACKOFF_SECONDS must be provided as a comma-separated string or list of numbers"
+        )
+
     @property
     def resolved_database_url(self) -> str:
         environment = self.environment.lower()
@@ -214,6 +250,13 @@ class Settings(BaseSettings):
                 )
             return _ensure_sqlalchemy_postgres_scheme(str(self.supabase_db_url))
         return _ensure_sqlalchemy_postgres_scheme(str(self.database_url))
+
+    @property
+    def pipeline_db_retry_backoff_schedule(self) -> tuple[float, ...]:
+        sequence = tuple(float(value) for value in self.pipeline_db_retry_backoff_seconds)
+        if not sequence:
+            return (1.0,)
+        return sequence
 
 
 @lru_cache

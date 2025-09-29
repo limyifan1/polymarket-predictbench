@@ -45,6 +45,7 @@
 - `--summary-path` writes a JSON artifact with run metadata and failures.
 - `--limit` is helpful when debugging a narrow slice of markets.
 - `--event-batch-size` controls how many event groups execute in parallel (defaults to `PIPELINE_EVENT_BATCH_SIZE`, set to 4).
+- Connection resiliency knobs: adjust `PIPELINE_DB_RETRY_ATTEMPTS` and `PIPELINE_DB_RETRY_BACKOFF_SECONDS` to tune retry counts/backoff when Supabase drops idle connections.
 - `--suite` (repeatable) runs only selected suites from `PROCESSING_EXPERIMENT_SUITES`.
   - `--stage` controls which stages execute (`research`, `forecast`, or `both`).
   - `--include-research` / `--include-forecast` filter variants by name or `suite:variant`.
