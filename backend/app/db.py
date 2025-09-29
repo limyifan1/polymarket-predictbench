@@ -22,11 +22,34 @@ def _ensure_sqlite_path(url: str) -> None:
 
 
 def _create_engine(url: str):
-    connect_args = {}
-    if url.startswith("sqlite"):
+    connect_args: dict[str, object] = {}
+    engine_kwargs: dict[str, object] = {
+        "echo": settings.debug,
+        "future": True,
+        "pool_pre_ping": True,
+    }
+
+    parsed = make_url(url)
+    backend = parsed.get_backend_name()
+
+    if backend == "sqlite":
         connect_args["check_same_thread"] = False
         _ensure_sqlite_path(url)
-    return create_engine(url, echo=settings.debug, connect_args=connect_args, future=True)
+    else:
+        # Recycle long-lived connections so Supabase/PgBouncer idle timeouts
+        # do not kill them mid-run, and rely on pre-ping to revive stale ones.
+        engine_kwargs["pool_recycle"] = 300
+
+        if backend.startswith("postgresql"):
+            connect_args.setdefault("keepalives", 1)
+            connect_args.setdefault("keepalives_idle", 120)
+            connect_args.setdefault("keepalives_interval", 30)
+            connect_args.setdefault("keepalives_count", 5)
+
+    if connect_args:
+        engine_kwargs["connect_args"] = connect_args
+
+    return create_engine(url, **engine_kwargs)
 
 
 def _create_session_factory(engine) -> sessionmaker[Session]:
