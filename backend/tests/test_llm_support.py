@@ -32,7 +32,9 @@ class DummySettings:
         return dict(self._overrides.get(name, {}))
 
 
-def build_context(overrides: dict[str, dict[str, object]] | None = None) -> PipelineContext:
+def build_context(
+    overrides: dict[str, dict[str, object]] | None = None,
+) -> PipelineContext:
     settings = DummySettings(overrides)
     return PipelineContext(
         run_id="test",
@@ -57,7 +59,7 @@ def test_resolve_llm_request_selects_gemini_provider() -> None:
         default_request_options=None,
     )
     assert runtime.provider == "gemini"
-    assert runtime.model == "gemini-1.5-flash"
+    assert runtime.model == "gemini-2.5-flash"
     assert isinstance(runtime.provider_impl, GeminiProvider)
 
 
@@ -68,7 +70,7 @@ class _GeminiResponse:
         self.usage_metadata = {"prompt_token_count": 10, "total_token_count": 20}
 
 
-@pytest.mark.parametrize("payload", ["{\"value\": 1}", "\n  {\"value\": 1}\n"])
+@pytest.mark.parametrize("payload", ['{"value": 1}', '\n  {"value": 1}\n'])
 def test_gemini_extract_json_parses_payload(payload: str) -> None:
     provider = GeminiProvider()
     response = _GeminiResponse(text=payload)

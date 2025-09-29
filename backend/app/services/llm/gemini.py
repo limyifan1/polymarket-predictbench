@@ -40,9 +40,10 @@ def _is_search_grounding_error(exc: Exception) -> bool:
     message = str(exc)
     return "Search Grounding is not supported" in message
 
+
 _DEFAULT_STAGE_MODELS: dict[str, str] = {
-    "research": "gemini-1.5-flash",
-    "forecast": "gemini-1.5-pro",
+    "research": "gemini-2.5-flash",
+    "forecast": "gemini-2.5-pro",
 }
 
 
@@ -83,7 +84,9 @@ class GeminiProvider(LLMProvider):
         override_key = overrides.get("api_key")
         if override_key is not None:
             if not isinstance(override_key, str):
-                raise ExperimentExecutionError("Gemini api_key override must be a string")
+                raise ExperimentExecutionError(
+                    "Gemini api_key override must be a string"
+                )
             add_key(override_key)
 
         override_keys = overrides.get("api_keys")
@@ -148,7 +151,9 @@ class GeminiProvider(LLMProvider):
             raise ExperimentExecutionError("GEMINI_API_KEY is not configured")
         client_options = overrides.get("client_options")
         if client_options is not None and not isinstance(client_options, Mapping):
-            raise ExperimentExecutionError("Gemini client_options override must be a mapping")
+            raise ExperimentExecutionError(
+                "Gemini client_options override must be a mapping"
+            )
         return _GeminiClient(api_keys=tuple(api_keys), client_options=client_options)
 
     def default_model(self, stage: str, *, context: PipelineContext) -> str | None:
@@ -198,7 +203,9 @@ class GeminiProvider(LLMProvider):
             role = message.get("role")
             content = message.get("content")
             if role == "system":
-                system_instruction = str(content) if content is not None else system_instruction
+                system_instruction = (
+                    str(content) if content is not None else system_instruction
+                )
                 continue
             part_text = str(content) if content is not None else ""
             contents.append({"role": role or "user", "parts": [{"text": part_text}]})
@@ -228,7 +235,9 @@ class GeminiProvider(LLMProvider):
             if value is None:
                 value = {}
             elif not isinstance(value, Mapping):
-                raise ExperimentExecutionError("Gemini google_search config must be a mapping")
+                raise ExperimentExecutionError(
+                    "Gemini google_search config must be a mapping"
+                )
             return {"google_search_retrieval": dict(value)}
         if "google_search_retrieval" in tool_map:
             value = tool_map["google_search_retrieval"]
@@ -260,10 +269,14 @@ class GeminiProvider(LLMProvider):
             normalised: list[Mapping[str, Any]] = []
             for entry in tools:
                 if not isinstance(entry, Mapping):
-                    raise ExperimentExecutionError("Gemini tool entries must be mappings")
+                    raise ExperimentExecutionError(
+                        "Gemini tool entries must be mappings"
+                    )
                 normalised.append(self._normalise_tool(entry))
             return normalised
-        raise ExperimentExecutionError("Gemini tools must be provided as a mapping or sequence")
+        raise ExperimentExecutionError(
+            "Gemini tools must be provided as a mapping or sequence"
+        )
 
     def _invoke_with_api_key(
         self,
@@ -352,7 +365,9 @@ class GeminiProvider(LLMProvider):
                     exc,
                 )
         if last_error is None:
-            raise ExperimentExecutionError("Gemini request failed; no API keys available")
+            raise ExperimentExecutionError(
+                "Gemini request failed; no API keys available"
+            )
         raise ExperimentExecutionError(
             "Gemini request failed after exhausting all configured API keys"
         ) from last_error
@@ -363,7 +378,9 @@ class GeminiProvider(LLMProvider):
             try:
                 return json.loads(text_candidate)
             except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-                raise ExperimentExecutionError("Gemini response did not contain valid JSON text") from exc
+                raise ExperimentExecutionError(
+                    "Gemini response did not contain valid JSON text"
+                ) from exc
         candidates = getattr(response, "candidates", None)
         if not candidates:
             raise ExperimentExecutionError("Gemini response missing candidates")
@@ -388,7 +405,9 @@ class GeminiProvider(LLMProvider):
                     try:
                         return json.loads(text)
                     except json.JSONDecodeError as exc:  # pragma: no cover
-                        raise ExperimentExecutionError("Gemini response part was not valid JSON") from exc
+                        raise ExperimentExecutionError(
+                            "Gemini response part was not valid JSON"
+                        ) from exc
         raise ExperimentExecutionError("Gemini response did not include a JSON payload")
 
     def usage_dict(self, response: Any) -> Mapping[str, Any] | None:
@@ -402,7 +421,11 @@ class GeminiProvider(LLMProvider):
             return dump()
         return {
             key: getattr(metadata, key)
-            for key in ("prompt_token_count", "candidates_token_count", "total_token_count")
+            for key in (
+                "prompt_token_count",
+                "candidates_token_count",
+                "total_token_count",
+            )
             if hasattr(metadata, key)
         }
 
