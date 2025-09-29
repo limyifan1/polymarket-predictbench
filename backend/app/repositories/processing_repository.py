@@ -61,6 +61,9 @@ class ProcessingRepository:
         self._session.flush()
         return record
 
+    def get_processing_run(self, run_id: str) -> ProcessingRun | None:
+        return self._session.get(ProcessingRun, run_id)
+
     def finalize_processing_run(
         self,
         run: ProcessingRun,

@@ -17,5 +17,5 @@ class PipelineContext:
     target_date: date
     window_days: int
     settings: Settings
-    db_session: Session
+    db_session: Session | None
     dry_run: bool

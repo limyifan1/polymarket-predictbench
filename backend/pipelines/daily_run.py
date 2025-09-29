@@ -1112,28 +1112,26 @@ def run_pipeline(
         args.dry_run,
     )
 
-    with session_factory() as session:
-        processing_repo = processing_repo_factory(session)
-        market_repo = market_repo_factory(session)
+    pipeline_context = PipelineContext(
+        run_id=run_id,
+        run_date=run_date,
+        target_date=target_date,
+        window_days=window_days,
+        settings=settings,
+        db_session=None,
+        dry_run=args.dry_run,
+    )
 
-        pipeline_context = PipelineContext(
-            run_id=run_id,
-            run_date=run_date,
-            target_date=target_date,
-            window_days=window_days,
-            settings=settings,
-            db_session=session,
-            dry_run=args.dry_run,
-        )
+    research_bundles = _build_research_bundles(
+        suites,
+        pipeline_context,
+        experiment_meta_index,
+    )
 
-        research_bundles = _build_research_bundles(
-            suites,
-            pipeline_context,
-            experiment_meta_index,
-        )
-
-        processing_run = None
-        if not args.dry_run:
+    processing_run_id: str | None = None
+    if not args.dry_run:
+        with session_factory() as session:
+            processing_repo = processing_repo_factory(session)
             processing_run = processing_repo.create_processing_run(
                 run_id=run_id,
                 run_date=run_date,
@@ -1142,6 +1140,7 @@ def run_pipeline(
                 git_sha=git_sha,
                 environment=settings.environment,
             )
+            processing_run_id = processing_run.run_id
             for meta in experiment_metas:
                 processing_repo.record_experiment_run(
                     ExperimentRunInput(
@@ -1158,161 +1157,177 @@ def run_pipeline(
                     description=meta.description,
                 )
 
-        if client_factory is None:
-            def _default_client_factory() -> PolymarketClient:
-                return PolymarketClient(
-                    page_size=settings.ingestion_page_size, filters=filters
+    if client_factory is None:
+        def _default_client_factory() -> PolymarketClient:
+            return PolymarketClient(
+                page_size=settings.ingestion_page_size, filters=filters
+            )
+
+        client_factory = _default_client_factory
+
+    def _record_processing_failure(
+        *,
+        market_id: str | None,
+        reason: str,
+        retriable: bool,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if args.dry_run:
+            return
+        with session_factory() as failure_session:
+            failure_repo = processing_repo_factory(failure_session)
+            failure_repo.record_processing_failure(
+                run_id=run_id,
+                market_id=market_id,
+                reason=reason,
+                retriable=retriable,
+                details=details,
+            )
+
+    client = client_factory()
+
+    try:
+        grouped_markets: dict[str, EventBucket] = {}
+        event_order: list[str] = []
+
+        for index, raw_market in enumerate(client.iter_markets(), start=1):
+            if args.limit and index > args.limit:
+                logger.info("Limit reached ({}); stopping early", args.limit)
+                break
+
+            summary.total_markets += 1
+
+            try:
+                normalized = normalize_market(raw_market)
+            except Exception as exc:  # noqa: BLE001
+                summary.failed_markets += 1
+                failure_reason = f"normalization_failed: {exc}"
+                summary.failures.append(
+                    {
+                        "market_id": raw_market.get("id", "unknown"),
+                        "reason": failure_reason,
+                    }
                 )
+                logger.exception(
+                    "Normalization failed for market payload {}",
+                    raw_market.get("id", "unknown"),
+                )
+                _record_processing_failure(
+                    market_id=raw_market.get("id"),
+                    reason="normalization_failed",
+                    retriable=True,
+                    details={"message": str(exc)},
+                )
+                continue
 
-            client_factory = _default_client_factory
+            event = normalized.event
+            if event and event.event_id:
+                group_key = event.event_id
+            else:
+                group_key = f"market:{normalized.market_id}"
 
-        client = client_factory()
+            bucket = grouped_markets.get(group_key)
+            if bucket is None:
+                bucket = EventBucket(event=event)
+                grouped_markets[group_key] = bucket
+                event_order.append(group_key)
+            elif bucket.event is None and event is not None:
+                bucket.event = event
 
-        try:
-            grouped_markets: dict[str, EventBucket] = {}
-            event_order: list[str] = []
+            bucket.markets.append(normalized)
 
-            for index, raw_market in enumerate(client.iter_markets(), start=1):
-                if args.limit and index > args.limit:
-                    logger.info("Limit reached ({}); stopping early", args.limit)
-                    break
+        for group_key in event_order:
+            bucket = grouped_markets[group_key]
+            markets = bucket.markets
+            event_payload = bucket.event
+            group = EventMarketGroup(event=event_payload, markets=markets)
 
-                summary.total_markets += 1
-
-                try:
-                    normalized = normalize_market(raw_market)
-                except Exception as exc:  # noqa: BLE001
+            try:
+                suite_research_records = _execute_research_bundles(
+                    suites,
+                    research_bundles,
+                    group,
+                    pipeline_context,
+                    active_stages=active_stages,
+                    enabled_research=enabled_research,
+                )
+                forecast_records = _execute_forecast_stage(
+                    suites,
+                    group,
+                    pipeline_context,
+                    experiment_meta_index,
+                    suite_research_records,
+                    active_stages=active_stages,
+                    enabled_forecast=enabled_forecast,
+                )
+            except ExperimentExecutionError as exc:
+                for market in markets:
                     summary.failed_markets += 1
-                    failure_reason = f"normalization_failed: {exc}"
+                    failure_reason = f"experiment_failed: {exc}"
                     summary.failures.append(
                         {
-                            "market_id": raw_market.get("id", "unknown"),
+                            "market_id": market.market_id,
                             "reason": failure_reason,
                         }
                     )
-                    logger.exception(
-                        "Normalization failed for market payload {}",
-                        raw_market.get("id", "unknown"),
+                    _record_processing_failure(
+                        market_id=market.market_id,
+                        reason="experiment_failed",
+                        retriable=True,
+                        details={"message": str(exc)},
                     )
-                    if not args.dry_run:
-                        processing_repo.record_processing_failure(
-                            run_id=run_id,
-                            market_id=raw_market.get("id"),
-                            reason="normalization_failed",
-                            retriable=True,
-                            details={"message": str(exc)},
-                        )
-                    continue
+                continue
 
-                event = normalized.event
-                if event and event.event_id:
-                    group_key = event.event_id
-                else:
-                    group_key = f"market:{normalized.market_id}"
-
-                bucket = grouped_markets.get(group_key)
-                if bucket is None:
-                    bucket = EventBucket(event=event)
-                    grouped_markets[group_key] = bucket
-                    event_order.append(group_key)
-                elif bucket.event is None and event is not None:
-                    bucket.event = event
-
-                bucket.markets.append(normalized)
-
-            for group_key in event_order:
-                bucket = grouped_markets[group_key]
-                markets = bucket.markets
-                event_payload = bucket.event
-                group = EventMarketGroup(event=event_payload, markets=markets)
-
-                try:
-                    suite_research_records = _execute_research_bundles(
-                        suites,
-                        research_bundles,
-                        group,
-                        pipeline_context,
-                        active_stages=active_stages,
-                        enabled_research=enabled_research,
+            if debug_dump_dir:
+                for suite in suites:
+                    suite_forecasts = [
+                        record
+                        for record in forecast_records
+                        if record.meta.suite_id == suite.suite_id
+                    ]
+                    _dump_debug_artifacts(
+                        debug_dump_dir,
+                        run_id=run_id,
+                        suite_id=suite.suite_id,
+                        group=group,
+                        research_records=suite_research_records.get(suite.suite_id, {}),
+                        forecast_records=suite_forecasts,
                     )
-                    forecast_records = _execute_forecast_stage(
-                        suites,
-                        group,
-                        pipeline_context,
-                        experiment_meta_index,
-                        suite_research_records,
-                        active_stages=active_stages,
-                        enabled_forecast=enabled_forecast,
+
+            expect_forecasts = ExperimentStage.FORECAST in active_stages
+            if expect_forecasts and not forecast_records:
+                for market in markets:
+                    summary.failed_markets += 1
+                    summary.failures.append(
+                        {
+                            "market_id": market.market_id,
+                            "reason": "no_forecast_results",
+                        }
                     )
-                except ExperimentExecutionError as exc:
-                    for market in markets:
-                        summary.failed_markets += 1
-                        failure_reason = f"experiment_failed: {exc}"
-                        summary.failures.append(
-                            {
-                                "market_id": market.market_id,
-                                "reason": failure_reason,
-                            }
-                        )
-                        if not args.dry_run:
-                            processing_repo.record_processing_failure(
-                                run_id=run_id,
-                                market_id=market.market_id,
-                                reason="experiment_failed",
-                                retriable=True,
-                                details={"message": str(exc)},
-                            )
-                    continue
+                    logger.warning(
+                        "No forecast results returned for market {}; skipping persistence",
+                        market.market_id,
+                    )
+                    _record_processing_failure(
+                        market_id=market.market_id,
+                        reason="no_forecast_results",
+                        retriable=False,
+                        details=None,
+                    )
+                continue
 
-                if debug_dump_dir:
-                    for suite in suites:
-                        suite_forecasts = [
-                            record
-                            for record in forecast_records
-                            if record.meta.suite_id == suite.suite_id
-                        ]
-                        _dump_debug_artifacts(
-                            debug_dump_dir,
-                            run_id=run_id,
-                            suite_id=suite.suite_id,
-                            group=group,
-                            research_records=suite_research_records.get(suite.suite_id, {}),
-                            forecast_records=suite_forecasts,
-                        )
+            summary.processed_markets += len(markets)
 
-                expect_forecasts = ExperimentStage.FORECAST in active_stages
-                if expect_forecasts and not forecast_records:
-                    for market in markets:
-                        summary.failed_markets += 1
-                        summary.failures.append(
-                            {
-                                "market_id": market.market_id,
-                                "reason": "no_forecast_results",
-                            }
-                        )
-                        logger.warning(
-                            "No forecast results returned for market {}; skipping persistence",
-                            market.market_id,
-                        )
-                        if not args.dry_run:
-                            processing_repo.record_processing_failure(
-                                run_id=run_id,
-                                market_id=market.market_id,
-                                reason="no_forecast_results",
-                                retriable=False,
-                                details=None,
-                            )
-                    continue
+            if args.dry_run:
+                continue
 
-                summary.processed_markets += len(markets)
+            with session_factory() as session:
+                processing_repo = processing_repo_factory(session)
+                market_repo = market_repo_factory(session)
 
-                if args.dry_run:
-                    continue
-
-                processed_event_id = str(uuid4())
                 processed_event = processing_repo.record_processed_event(
                     ProcessedEventInput(
-                        processed_event_id=processed_event_id,
+                        processed_event_id=str(uuid4()),
                         run_id=run_id,
                         event_id=event_payload.event_id if event_payload else None,
                         event_slug=event_payload.slug if event_payload else None,
@@ -1324,10 +1339,9 @@ def run_pipeline(
                 market_to_processed: dict[str, str] = {}
 
                 for market in markets:
-                    processed_market_id = str(uuid4())
                     processed_market = processing_repo.record_processed_market(
                         ProcessedMarketInput(
-                            processed_market_id=processed_market_id,
+                            processed_market_id=str(uuid4()),
                             run_id=run_id,
                             market_id=market.market_id,
                             market_slug=market.slug,
@@ -1338,7 +1352,9 @@ def run_pipeline(
                             contracts=_convert_contracts(market),
                         )
                     )
-                    market_to_processed[market.market_id] = processed_market.processed_market_id
+                    market_to_processed[market.market_id] = (
+                        processed_market.processed_market_id
+                    )
 
                     market_repo.upsert_market(market)
 
@@ -1348,7 +1364,10 @@ def run_pipeline(
                             record.output.payload,
                             diagnostics=record.output.diagnostics,
                         )
-                        artifact_hash = record.output.artifact_hash or _compute_artifact_hash(payload)
+                        artifact_hash = (
+                            record.output.artifact_hash
+                            or _compute_artifact_hash(payload)
+                        )
                         artifact_id = str(uuid4())
                         record.artifact_id = artifact_id
                         processing_repo.record_research_artifact(
@@ -1381,7 +1400,9 @@ def run_pipeline(
 
                 for forecast_record in forecast_records:
                     dependencies: dict[str, str] = {}
-                    suite_records = suite_research_records.get(forecast_record.meta.suite_id, {})
+                    suite_records = suite_research_records.get(
+                        forecast_record.meta.suite_id, {}
+                    )
                     for dep in forecast_record.dependencies:
                         artifact = suite_records.get(dep)
                         if artifact and artifact.artifact_id:
@@ -1421,28 +1442,34 @@ def run_pipeline(
                         )
                     )
 
-        finally:
-            if hasattr(client, "close"):
-                client.close()
+    finally:
+        if hasattr(client, "close"):
+            client.close()
 
-        finished_at = datetime.now(timezone.utc)
+    finished_at = datetime.now(timezone.utc)
 
-        if not args.dry_run and processing_run is not None:
-            processing_repo.finalize_processing_run(
-                processing_run,
-                status="completed"
-                if summary.failed_markets == 0
-                else "completed_with_errors",
-                total_markets=summary.total_markets,
-                processed_markets=summary.processed_markets,
-                failed_markets=summary.failed_markets,
-                finished_at=finished_at,
-            )
+    if not args.dry_run and processing_run_id is not None:
+        for meta in experiment_metas:
+            meta.finished_at = finished_at
+            status = meta.status
+            if status == "running":
+                status = "completed"
+            meta.status = status
+        with session_factory() as session:
+            processing_repo = processing_repo_factory(session)
+            processing_run = processing_repo.get_processing_run(processing_run_id)
+            if processing_run is not None:
+                processing_repo.finalize_processing_run(
+                    processing_run,
+                    status="completed"
+                    if summary.failed_markets == 0
+                    else "completed_with_errors",
+                    total_markets=summary.total_markets,
+                    processed_markets=summary.processed_markets,
+                    failed_markets=summary.failed_markets,
+                    finished_at=finished_at,
+                )
             for meta in experiment_metas:
-                meta.finished_at = finished_at
-                status = meta.status
-                if status == "running":
-                    status = "completed"
                 processing_repo.record_experiment_run(
                     ExperimentRunInput(
                         experiment_run_id=meta.run_identifier,
@@ -1450,7 +1477,7 @@ def run_pipeline(
                         experiment_name=meta.experiment_name,
                         experiment_version=meta.strategy_version,
                         stage=meta.stage.value,
-                        status=status,
+                        status=meta.status,
                         started_at=meta.started_at,
                         finished_at=meta.finished_at,
                         error_message="; ".join(meta.error_messages)
