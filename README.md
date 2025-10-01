@@ -51,7 +51,9 @@ publish daily snapshots.
    npm run dev
    ```
    The dashboard expects the API at `http://localhost:8000`; override with
-   `NEXT_PUBLIC_API_BASE_URL` when needed.
+   `NEXT_PUBLIC_API_BASE_URL` when needed. To point a local UI at a production
+   Supabase-backed API, set `NEXT_PUBLIC_PROD_API_BASE_URL` and pick
+   **Production (Supabase)** from the dataset selector in the filter panel.
 
 ## Common workflows
 | Task | Command |

@@ -80,7 +80,7 @@ def test_gemini_extract_json_parses_payload(payload: str) -> None:
     assert usage["prompt_token_count"] == 10
 
 
-def test_gemini_default_tools_include_google_search_retrieval() -> None:
+def test_gemini_default_tools_include_google_search() -> None:
     context = build_context({"dummy": {"provider": "gemini"}})
     runtime = resolve_llm_request(
         DummyStrategy(),
@@ -92,4 +92,22 @@ def test_gemini_default_tools_include_google_search_retrieval() -> None:
         default_request_options=None,
     )
     assert runtime.tools is not None
-    assert {"google_search_retrieval": {}} in runtime.tools
+    assert {"google_search": {}} in runtime.tools
+
+
+def test_gemini_search_tool_remaps_to_legacy_for_1_x_models() -> None:
+    provider = GeminiProvider()
+    remapped = provider._remap_search_tools_for_model(  # type: ignore[attr-defined]
+        model="gemini-1.5-flash",
+        tools=[{"google_search": {}}],
+    )
+    assert remapped == [{"google_search_retrieval": {}}]
+
+
+def test_gemini_search_tool_remaps_legacy_payload_for_2_x_models() -> None:
+    provider = GeminiProvider()
+    remapped = provider._remap_search_tools_for_model(  # type: ignore[attr-defined]
+        model="gemini-2.5-pro",
+        tools=[{"google_search_retrieval": {}}],
+    )
+    assert remapped == [{"google_search": {}}]

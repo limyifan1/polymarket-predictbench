@@ -176,7 +176,7 @@ class GeminiProvider(LLMProvider):
     ) -> Sequence[Mapping[str, Any]] | None:
         del context
         if stage == "research":
-            return ({"google_search_retrieval": {}},)
+            return ({"google_search": {}},)
         return None
 
     def json_mode_kwargs(
@@ -238,7 +238,7 @@ class GeminiProvider(LLMProvider):
                 raise ExperimentExecutionError(
                     "Gemini google_search config must be a mapping"
                 )
-            return {"google_search_retrieval": dict(value)}
+            return {"google_search": dict(value)}
         if "google_search_retrieval" in tool_map:
             value = tool_map["google_search_retrieval"]
             if value is None:
@@ -251,7 +251,7 @@ class GeminiProvider(LLMProvider):
         tool_type = tool_map.get("type")
         if tool_type == "google_search":
             config = {key: value for key, value in tool_map.items() if key != "type"}
-            return {"google_search_retrieval": config}
+            return {"google_search": config}
         if tool_type == "google_search_retrieval":
             config = {key: value for key, value in tool_map.items() if key != "type"}
             return {"google_search_retrieval": config}
@@ -277,6 +277,41 @@ class GeminiProvider(LLMProvider):
         raise ExperimentExecutionError(
             "Gemini tools must be provided as a mapping or sequence"
         )
+
+    def _remap_search_tools_for_model(
+        self,
+        *,
+        model: str,
+        tools: Sequence[Mapping[str, Any]],
+    ) -> list[Mapping[str, Any]]:
+        model_lower = model.lower()
+        use_legacy_search = model_lower.startswith("gemini-1")
+        remapped: list[Mapping[str, Any]] = []
+        for tool in tools:
+            if "google_search" in tool:
+                config = dict(tool.get("google_search") or {})
+                if use_legacy_search:
+                    logger.debug(
+                        "Remapping google_search to google_search_retrieval for model {}",
+                        model,
+                    )
+                    remapped.append({"google_search_retrieval": config})
+                else:
+                    remapped.append({"google_search": config})
+                continue
+            if "google_search_retrieval" in tool:
+                config = dict(tool.get("google_search_retrieval") or {})
+                if use_legacy_search:
+                    remapped.append({"google_search_retrieval": config})
+                else:
+                    logger.debug(
+                        "Remapping google_search_retrieval to google_search for model {}",
+                        model,
+                    )
+                    remapped.append({"google_search": config})
+                continue
+            remapped.append(tool)
+        return remapped
 
     def _invoke_with_api_key(
         self,
@@ -336,6 +371,11 @@ class GeminiProvider(LLMProvider):
         tool_payload: list[Mapping[str, Any]] = []
         tool_payload.extend(self._normalise_tools_input(request_tools))
         tool_payload.extend(self._normalise_tools_input(tools))
+        if tool_payload:
+            tool_payload = self._remap_search_tools_for_model(
+                model=request.model,
+                tools=tool_payload,
+            )
         api_keys = request.client.api_keys
         if not api_keys:
             raise ExperimentExecutionError("GEMINI_API_KEY is not configured")

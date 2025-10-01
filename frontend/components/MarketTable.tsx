@@ -3,7 +3,12 @@
 import { useMemo, useState } from "react";
 
 import { formatDateTime } from "@/lib/date";
-import type { EventWithMarkets, Market } from "@/types/market";
+import type {
+  EventWithMarkets,
+  ForecastResult,
+  Market,
+  ResearchArtifact,
+} from "@/types/market";
 
 const CLOSE_DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   timeZone: "UTC",
@@ -90,6 +95,290 @@ function primaryLine(text: string | null | undefined): string | null {
   return firstLine ?? null;
 }
 
+type ResearchSource = {
+  title: string;
+  url: string;
+  snippet?: string | null;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function extractResearchSummary(payload: Record<string, unknown> | null | undefined): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const summary = payload.summary;
+  return typeof summary === "string" && summary.trim().length ? summary.trim() : null;
+}
+
+function extractResearchConfidence(payload: Record<string, unknown> | null | undefined): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const confidence = payload.confidence;
+  if (typeof confidence === "string" && confidence.trim()) {
+    return confidence.trim();
+  }
+  return null;
+}
+
+function extractResearchInsights(payload: Record<string, unknown> | null | undefined): string[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const insights = payload.key_insights;
+  if (!Array.isArray(insights)) {
+    return [];
+  }
+  return insights
+    .map((item) => {
+      if (typeof item === "string" && item.trim()) {
+        return item.trim();
+      }
+      if (isRecord(item)) {
+        const candidates = [item.insight, item.summary, item.text];
+        for (const candidate of candidates) {
+          if (typeof candidate === "string" && candidate.trim()) {
+            return candidate.trim();
+          }
+        }
+      }
+      return null;
+    })
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+function extractResearchSources(payload: Record<string, unknown> | null | undefined): ResearchSource[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const sources = payload.sources;
+  if (!Array.isArray(sources)) {
+    return [];
+  }
+  return sources
+    .map((entry) => {
+      if (!isRecord(entry)) {
+        return null;
+      }
+      const url = typeof entry.url === "string" ? entry.url : null;
+      const title = typeof entry.title === "string" ? entry.title : null;
+      if (!url || !title) {
+        return null;
+      }
+      const snippet = typeof entry.snippet === "string" ? entry.snippet : null;
+      return { title, url, snippet } satisfies ResearchSource;
+    })
+    .filter((value): value is ResearchSource => Boolean(value));
+}
+
+function extractOutcomePrices(
+  payload: Record<string, unknown> | null | undefined,
+): Array<{ outcome: string; price: number }> {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const data = payload.outcomePrices;
+  if (!isRecord(data)) {
+    return [];
+  }
+  return Object.entries(data)
+    .map(([outcome, value]) => {
+      if (typeof value === "number") {
+        return { outcome, price: value };
+      }
+      if (typeof value === "string") {
+        const parsed = Number.parseFloat(value);
+        if (!Number.isNaN(parsed)) {
+          return { outcome, price: parsed };
+        }
+      }
+      return null;
+    })
+    .filter((entry): entry is { outcome: string; price: number } => Boolean(entry));
+}
+
+function extractForecastReasoning(payload: Record<string, unknown> | null | undefined): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const reasoning = payload.reasoning;
+  if (typeof reasoning === "string" && reasoning.trim()) {
+    return reasoning.trim();
+  }
+  return null;
+}
+
+function formatUrlHost(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, "");
+  } catch (error) {
+    return url;
+  }
+}
+
+function EventResearch({ research }: { research: ResearchArtifact[] }) {
+  if (!research.length) {
+    return null;
+  }
+
+  return (
+    <section className="event-research" aria-label="Experiment research summaries">
+      <header className="event-research__header">
+        <h4 className="event-research__title">Research briefs</h4>
+        <p className="event-research__subtitle">
+          Synthesized evidence produced during the latest research-stage experiment runs for this event.
+        </p>
+      </header>
+      <div className="event-research__grid">
+        {research.map((artifact) => {
+          const summary = extractResearchSummary(artifact.payload ?? null);
+          const insights = extractResearchInsights(artifact.payload ?? null).slice(0, 4);
+          const sources = extractResearchSources(artifact.payload ?? null).slice(0, 4);
+          const confidence = extractResearchConfidence(artifact.payload ?? null);
+          const key = artifact.artifact_id ?? `${artifact.descriptor.experiment_name}:${artifact.descriptor.variant_name}`;
+
+          return (
+            <article key={key} className="research-card">
+              <header className="research-card__header">
+                <div className="research-card__heading">
+                  <span className="badge">
+                    {artifact.descriptor.variant_name} v{artifact.descriptor.variant_version}
+                  </span>
+                  <span className="research-card__experiment">
+                    {artifact.descriptor.experiment_name} · stage {artifact.descriptor.stage}
+                  </span>
+                </div>
+                <div className="research-card__meta">
+                  <span>Run {artifact.run.run_id}</span>
+                  <span>Updated {formatDateTime(artifact.updated_at)}</span>
+                  {artifact.pipeline_run ? (
+                    <span>
+                      Pipeline {artifact.pipeline_run.run_date} ({artifact.pipeline_run.environment ?? "local"})
+                    </span>
+                  ) : null}
+                </div>
+              </header>
+              {summary && <p className="research-card__summary">{summary}</p>}
+              {confidence && <p className="research-card__confidence">Confidence: {confidence}</p>}
+              {insights.length > 0 && (
+                <div className="research-card__section">
+                  <h5>Key insights</h5>
+                  <ul className="research-card__list">
+                    {insights.map((insight, index) => (
+                      <li key={`${key}-insight-${index}`}>{insight}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {sources.length > 0 && (
+                <div className="research-card__section">
+                  <h5>Primary sources</h5>
+                  <ul className="research-card__sources">
+                    {sources.map((source, index) => (
+                      <li key={`${key}-source-${index}`}>
+                        <a href={source.url} target="_blank" rel="noopener noreferrer">
+                          {source.title}
+                        </a>
+                        <span className="research-card__source-host">{formatUrlHost(source.url)}</span>
+                        {source.snippet && <p className="research-card__source-snippet">{source.snippet}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {artifact.artifact_uri && (
+                <a
+                  className="research-card__artifact"
+                  href={artifact.artifact_uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  View full artifact
+                </a>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MarketForecasts({ results }: { results: ForecastResult[] }) {
+  if (!results.length) {
+    return null;
+  }
+
+  return (
+    <section className="market-forecasts" aria-label="Experiment forecast results">
+      <h5 className="market-forecasts__title">Model forecasts</h5>
+      <div className="market-forecasts__list">
+        {results.map((result) => {
+          const key = `${result.descriptor.experiment_name}:${result.descriptor.variant_name}:${result.recorded_at}`;
+          const prices = extractOutcomePrices(result.payload ?? null);
+          const reasoning = extractForecastReasoning(result.payload ?? null);
+
+          return (
+            <article key={key} className="forecast-card">
+              <header className="forecast-card__header">
+                <div className="forecast-card__heading">
+                  <span className="badge">
+                    {result.descriptor.variant_name} v{result.descriptor.variant_version}
+                  </span>
+                  <span className="forecast-card__experiment">{result.descriptor.experiment_name}</span>
+                </div>
+                <div className="forecast-card__meta">
+                  <span>Run {result.run.run_id}</span>
+                  <span>{result.run.status}</span>
+                  <span>Updated {formatDateTime(result.recorded_at)}</span>
+                </div>
+              </header>
+              {result.score !== null && result.score !== undefined && !Number.isNaN(result.score) && (
+                <p className="forecast-card__score">Calibration score: {result.score.toFixed(3)}</p>
+              )}
+              {prices.length > 0 && (
+                <table className="forecast-card__table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Outcome</th>
+                      <th scope="col">Price</th>
+                      <th scope="col">Implied</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {prices.map((item) => (
+                      <tr key={`${key}-${item.outcome}`}>
+                        <td>{item.outcome}</td>
+                        <td>${item.price.toFixed(3)}</td>
+                        <td>{formatProbability(item.price)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {reasoning && <p className="forecast-card__reasoning">{reasoning}</p>}
+              {result.artifact_uri && (
+                <a
+                  className="forecast-card__artifact"
+                  href={result.artifact_uri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Review submission payload
+                </a>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function MarketTable({ events }: { events: EventWithMarkets[] }) {
   const [expandedMarkets, setExpandedMarkets] = useState<Record<string, boolean>>({});
   const rows = useMemo(() => events, [events]);
@@ -154,13 +443,15 @@ export function MarketTable({ events }: { events: EventWithMarkets[] }) {
                       <dd>{nextClose ? formatCloseDate(nextClose) : "-"}</dd>
                     </div>
                     {event.start_time && (
-                      <div>
-                        <dt>Event start</dt>
-                        <dd>{formatCloseDate(event.start_time)}</dd>
-                      </div>
-                    )}
-                  </dl>
+                    <div>
+                      <dt>Event start</dt>
+                      <dd>{formatCloseDate(event.start_time)}</dd>
+                    </div>
+                  )}
+                </dl>
                 </header>
+
+                <EventResearch research={event.research} />
 
                 <div className="event-card__markets event-card__markets--grid">
                   <div className="market-grid">
@@ -249,6 +540,8 @@ export function MarketTable({ events }: { events: EventWithMarkets[] }) {
                             ))}
                             {!market.contracts.length && <li className="market-row__outcome-empty">-</li>}
                           </ul>
+
+                          <MarketForecasts results={market.experiment_results} />
                         </div>
                       );
                     })}

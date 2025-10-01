@@ -61,12 +61,13 @@ SQLite/Postgres ─┘→ FastAPI (app/) → Next.js dashboard (frontend/)
   `crud.upsert_market` so the API can continue serving historical snapshots.
 
 ### Frontend (`frontend/`)
-- Next.js (App Router) dashboard built with TypeScript. It fetches grouped
-  markets from the API, surfaces filtering and sorting by close date, volume,
-  and liquidity, and links to raw research artifacts.
+- Next.js (App Router) dashboard built with TypeScript. It now renders market
+  research briefs and forecast experiment outputs alongside liquidity stats.
 - Shared utilities live in `frontend/lib/` and shared types in
-  `frontend/types/`. Environment configuration uses `NEXT_PUBLIC_API_BASE_URL`
-  to point at the FastAPI instance.
+  `frontend/types/`. Environment configuration uses
+  `NEXT_PUBLIC_API_BASE_URL` for the default API and
+  `NEXT_PUBLIC_PROD_API_BASE_URL` when you want the UI to pull data from the
+  Supabase-hosted backend.
 
 ### Data artifacts (`data/`)
 - Local runs default to `data/predictbench.db` (SQLite). The path is ignored by

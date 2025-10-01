@@ -8,6 +8,7 @@ export type FilterState = {
   min_volume?: number | null;
   sort?: string;
   order?: string;
+  dataset?: "local" | "production";
 };
 
 function isoToDateInput(value: string | null | undefined): string {
@@ -33,6 +34,13 @@ export function MarketFilters({ initial }: { initial: FilterState }) {
         </Link>
       </div>
       <div className="filters__grid">
+        <label className="field">
+          <span className="field__label">Dataset</span>
+          <select className="field__input" name="dataset" defaultValue={initial.dataset ?? "local"}>
+            <option value="local">Local dataset</option>
+            <option value="production">Production (Supabase)</option>
+          </select>
+        </label>
         <label className="field">
           <span className="field__label">Close after</span>
           <input

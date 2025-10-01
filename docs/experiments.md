@@ -131,9 +131,10 @@ Provider abstractions live in `backend/app/services/llm/`.
   the methods on the request spec rather than importing provider-specific
   helpers.
 - When switching providers, review default tools: Gemini research stages now
-  opt into the `google_search_retrieval` tool for live citations by default.
-  Supply `tools=[]` or override with `google_search_retrieval` if you need to
-  disable or customise the grounding behaviour.
+  opt into the `google_search` grounding tool by default (the provider will
+  downgrade to `google_search_retrieval` automatically for legacy 1.x models).
+  Supply `tools=[]` or override the tool if you need to disable or customise
+  the grounding behaviour.
 
 ### Per-run overrides for ablations
 - Use `--experiment-override` on the pipeline CLI to swap models or tweak

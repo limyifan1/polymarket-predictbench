@@ -61,6 +61,8 @@
    npm run dev
    ```
 3. The dashboard expects the API at `http://localhost:8000`; override via `NEXT_PUBLIC_API_BASE_URL`.
+   Set `NEXT_PUBLIC_PROD_API_BASE_URL` and choose the production dataset in the
+   UI filters to read from the Supabase-backed API.
 4. Lint with `npm run lint` before committing UI changes.
 5. Avoid `npm run build` during agent sessions if you rely on hot reload; restart `npm run dev` after dependency updates.
 

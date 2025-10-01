@@ -1,6 +1,8 @@
 import type { EventListResponse, MarketListResponse } from "@/types/market";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const PROD_API_BASE_URL =
+  process.env.NEXT_PUBLIC_PROD_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? API_BASE_URL;
 
 export type MarketFilters = {
   status?: string;
@@ -11,6 +13,7 @@ export type MarketFilters = {
   order?: "asc" | "desc";
   limit?: number;
   offset?: number;
+  dataset?: "local" | "production";
 };
 
 const DATE_END_SUFFIX = "T23:59:59Z";
@@ -40,6 +43,9 @@ export function parseFilters(searchParams: Record<string, string | string[] | un
 
   const closeAfterRaw = get("close_after");
   const closeBeforeRaw = get("close_before");
+  const datasetRaw = (get("dataset") ?? "local").toLowerCase();
+  const dataset: MarketFilters["dataset"] =
+    datasetRaw === "production" || datasetRaw === "prod" ? "production" : "local";
 
   return {
     status: get("status") ?? "open",
@@ -50,27 +56,37 @@ export function parseFilters(searchParams: Record<string, string | string[] | un
     order: (get("order") as MarketFilters["order"]) ?? "asc",
     limit: get("limit") ? Number.parseInt(get("limit")!, 10) : 50,
     offset: get("offset") ? Number.parseInt(get("offset")!, 10) : 0,
+    dataset,
   };
 }
 
 function buildQuery(filters: MarketFilters): string {
+  const { dataset: _dataset, ...rest } = filters;
   const params = new URLSearchParams();
-  if (filters.status) params.set("status", filters.status);
-  if (filters.close_after) params.set("close_after", filters.close_after);
-  if (filters.close_before) params.set("close_before", filters.close_before);
-  if (typeof filters.min_volume === "number" && !Number.isNaN(filters.min_volume)) {
-    params.set("min_volume", filters.min_volume.toString());
+  if (rest.status) params.set("status", rest.status);
+  if (rest.close_after) params.set("close_after", rest.close_after);
+  if (rest.close_before) params.set("close_before", rest.close_before);
+  if (typeof rest.min_volume === "number" && !Number.isNaN(rest.min_volume)) {
+    params.set("min_volume", rest.min_volume.toString());
   }
-  if (filters.sort) params.set("sort", filters.sort);
-  if (filters.order) params.set("order", filters.order);
-  if (typeof filters.limit === "number") params.set("limit", filters.limit.toString());
-  if (typeof filters.offset === "number") params.set("offset", filters.offset.toString());
+  if (rest.sort) params.set("sort", rest.sort);
+  if (rest.order) params.set("order", rest.order);
+  if (typeof rest.limit === "number") params.set("limit", rest.limit.toString());
+  if (typeof rest.offset === "number") params.set("offset", rest.offset.toString());
   return params.toString();
+}
+
+function resolveApiBase(dataset: MarketFilters["dataset"]): string {
+  if (dataset === "production") {
+    return PROD_API_BASE_URL;
+  }
+  return API_BASE_URL;
 }
 
 export async function fetchMarkets(filters: MarketFilters): Promise<MarketListResponse> {
   const query = buildQuery(filters);
-  const response = await fetch(`${API_BASE_URL}/markets?${query}`, {
+  const baseUrl = resolveApiBase(filters.dataset);
+  const response = await fetch(`${baseUrl}/markets?${query}`, {
     cache: "no-store",
   });
 
@@ -83,7 +99,9 @@ export async function fetchMarkets(filters: MarketFilters): Promise<MarketListRe
 
 export async function fetchEvents(filters: MarketFilters): Promise<EventListResponse> {
   const query = buildQuery(filters);
-  const response = await fetch(`${API_BASE_URL}/events?${query}`, {
+  const baseUrl = resolveApiBase(filters.dataset);
+  const url = `${baseUrl}/events?${query}`;
+  const response = await fetch(url, {
     cache: "no-store",
   });
 

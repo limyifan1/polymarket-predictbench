@@ -9,6 +9,53 @@ export type Contract = {
     raw_data?: Record<string, unknown> | null;
 };
 
+export type ExperimentDescriptor = {
+  experiment_name: string;
+  experiment_version: string;
+  variant_name: string;
+  variant_version: string;
+  stage: string;
+};
+
+export type ExperimentRunSummary = {
+  run_id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type PipelineRunSummary = {
+  run_id: string;
+  run_date: string;
+  target_date: string;
+  window_days: number;
+  status: string;
+  environment: string | null;
+};
+
+export type ResearchArtifact = {
+  descriptor: ExperimentDescriptor;
+  run: ExperimentRunSummary;
+  pipeline_run: PipelineRunSummary | null;
+  artifact_id: string | null;
+  artifact_uri: string | null;
+  artifact_hash: string | null;
+  created_at: string;
+  updated_at: string;
+  payload: Record<string, unknown> | null;
+};
+
+export type ForecastResult = {
+  descriptor: ExperimentDescriptor;
+  run: ExperimentRunSummary;
+  pipeline_run: PipelineRunSummary | null;
+  recorded_at: string;
+  score: number | null;
+  artifact_uri: string | null;
+  source_artifact_id: string | null;
+  payload: Record<string, unknown> | null;
+};
+
 export type Event = {
   event_id: string;
   slug: string | null;
@@ -39,6 +86,7 @@ export type Market = {
   icon_url: string | null;
   contracts: Contract[];
   event: Event | null;
+  experiment_results: ForecastResult[];
 };
 
 export type MarketListResponse = {
@@ -49,6 +97,7 @@ export type MarketListResponse = {
 export type EventWithMarkets = Event & {
   markets: Market[];
   market_count: number;
+  research: ResearchArtifact[];
 };
 
 export type EventListResponse = {

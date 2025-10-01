@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -69,6 +69,7 @@ class Event(BaseModel):
 class Market(MarketBase):
     contracts: list[Contract] = Field(default_factory=list)
     event: Event | None = None
+    experiment_results: list["ForecastResult"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -81,8 +82,67 @@ class MarketList(BaseModel):
 class EventWithMarkets(Event):
     markets: list[Market] = Field(default_factory=list)
     market_count: int
+    research: list["ResearchArtifact"] = Field(default_factory=list)
 
 
 class EventList(BaseModel):
     total: int
     items: list[EventWithMarkets]
+
+
+class ExperimentDescriptor(BaseModel):
+    experiment_name: str
+    experiment_version: str
+    variant_name: str
+    variant_version: str
+    stage: str
+
+
+class ExperimentRunSummary(BaseModel):
+    run_id: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+
+
+class PipelineRunSummary(BaseModel):
+    run_id: str
+    run_date: date
+    target_date: date
+    window_days: int
+    status: str
+    environment: str | None = None
+
+
+class ResearchArtifact(BaseModel):
+    descriptor: ExperimentDescriptor
+    run: ExperimentRunSummary
+    pipeline_run: PipelineRunSummary | None = None
+    artifact_id: str | None = None
+    artifact_uri: str | None = None
+    artifact_hash: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    payload: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ForecastResult(BaseModel):
+    descriptor: ExperimentDescriptor
+    run: ExperimentRunSummary
+    pipeline_run: PipelineRunSummary | None = None
+    recorded_at: datetime
+    score: float | None = None
+    artifact_uri: str | None = None
+    source_artifact_id: str | None = None
+    payload: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def _coerce_score(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        return float(value)

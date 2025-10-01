@@ -43,7 +43,9 @@ the backend, pipeline, and frontend via `pydantic-settings`.
    npm run dev
    ```
    The dashboard expects the API at `http://localhost:8000`. Override with
-   `NEXT_PUBLIC_API_BASE_URL` when needed.
+   `NEXT_PUBLIC_API_BASE_URL` when needed. Add `NEXT_PUBLIC_PROD_API_BASE_URL`
+   (and select the production dataset in the filter panel) to drive the UI from
+   a remote Supabase-backed FastAPI instance.
 
 ## Recommended pre-commit checks
 - `uv run python -m pipelines.daily_run --dry-run --limit 5`

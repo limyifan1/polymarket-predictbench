@@ -581,6 +581,21 @@ main.page {
   color: var(--color-primary-strong);
 }
 
+.badge--context {
+  margin-top: 0.4rem;
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--color-primary-strong);
+}
+
+.badge--context[data-tone="production"] {
+  background: rgba(34, 197, 94, 0.15);
+  color: #047857;
+}
+
+.badge--context[data-tone="local"] {
+  background: rgba(37, 99, 235, 0.12);
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -590,6 +605,249 @@ main.page {
   border: 1px dashed rgba(148, 163, 184, 0.6);
   background: rgba(255, 255, 255, 0.75);
   color: var(--color-muted);
+}
+
+.event-research {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.1rem 1.35rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(241, 245, 249, 0.6);
+}
+
+.event-research__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.event-research__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.event-research__subtitle {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+  max-width: 70ch;
+}
+
+.event-research__grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.research-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.15rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  border: 1px solid rgba(203, 213, 225, 0.6);
+  box-shadow: 0 18px 34px -32px rgba(15, 23, 42, 0.5);
+}
+
+.research-card__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.research-card__heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.research-card__experiment {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+}
+
+.research-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+  font-size: 0.78rem;
+  color: var(--color-text-subtle);
+}
+
+.research-card__summary {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--color-text);
+  line-height: 1.55;
+}
+
+.research-card__confidence {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-primary-strong);
+}
+
+.research-card__section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.research-card__section h5 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+}
+
+.research-card__list {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.35rem;
+  color: var(--color-text-subtle);
+  font-size: 0.86rem;
+}
+
+.research-card__sources {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  font-size: 0.85rem;
+}
+
+.research-card__sources a {
+  font-weight: 600;
+}
+
+.research-card__source-host {
+  display: inline-block;
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+}
+
+.research-card__source-snippet {
+  margin: 0.2rem 0 0;
+  color: var(--color-text-subtle);
+  line-height: 1.4;
+}
+
+.research-card__artifact {
+  align-self: flex-start;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-primary-strong);
+}
+
+.market-forecasts {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.market-forecasts__title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.market-forecasts__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.forecast-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.forecast-card__header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.forecast-card__heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.forecast-card__experiment {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+}
+
+.forecast-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  font-size: 0.78rem;
+  color: var(--color-text-subtle);
+}
+
+.forecast-card__score {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--color-primary-strong);
+}
+
+.forecast-card__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.forecast-card__table th,
+.forecast-card__table td {
+  padding: 0.35rem 0.4rem;
+  text-align: left;
+}
+
+.forecast-card__table thead {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.forecast-card__reasoning {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--color-text-subtle);
+  line-height: 1.55;
+}
+
+.forecast-card__artifact {
+  align-self: flex-start;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-primary-strong);
 }
 
 .empty-state strong {

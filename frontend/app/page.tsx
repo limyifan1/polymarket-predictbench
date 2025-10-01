@@ -25,6 +25,7 @@ export default async function Home({
   const filters = parseFilters(searchParams);
   const events = await fetchEvents(filters);
   const totalMarkets = events.items.reduce((sum, event) => sum + event.market_count, 0);
+  const datasetLabel = filters.dataset === "production" ? "Production (Supabase)" : "Local dataset";
   const aggregate = events.items.reduce(
     (acc, event) => {
       for (const market of event.markets) {
@@ -50,6 +51,13 @@ export default async function Home({
             Assess live Polymarket questions grouped by event. Dial in on signal by filtering for relevant time windows,
             minimum depth, and market freshness.
           </p>
+          <span
+            className="badge badge--context"
+            data-tone={filters.dataset === "production" ? "production" : "local"}
+            aria-label="Active dataset"
+          >
+            {datasetLabel}
+          </span>
         </div>
         <dl className="page__metrics" aria-label="Current dataset summary">
           <div className="metric-card">
@@ -75,6 +83,7 @@ export default async function Home({
           min_volume: filters.min_volume ?? null,
           sort: filters.sort,
           order: filters.order,
+          dataset: filters.dataset,
         }}
       />
       <MarketTable events={events.items} />
