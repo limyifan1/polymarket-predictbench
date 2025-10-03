@@ -27,7 +27,7 @@
 - Production runs (`ENVIRONMENT=production`) must provide `SUPABASE_DB_URL`; the config normalizes it to `postgresql+psycopg://` and enforces `sslmode=require`.
 - `SUPABASE_SERVICE_ROLE_KEY` is required for CI/automation when writing to Supabase.
 - Extra Polymarket filters live in `INGESTION_FILTERS` (JSON string) and `INGESTION_PAGE_SIZE`.
-- `GEMINI_ADDITIONAL_API_KEYS` accepts a comma-separated or JSON list of fallback Gemini API keys; the LLM service will try them in order if the primary key is rate-limited or errors.
+- `GEMINI_ADDITIONAL_API_KEYS` accepts a comma-separated or JSON list of fallback Gemini API keys; the LLM service randomises the order per request and falls back if a key is rate-limited or errors.
 
 ### Daily pipeline
 - Main entry point: `backend/pipelines/daily_run.py`.
