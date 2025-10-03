@@ -146,3 +146,33 @@ class ForecastResult(BaseModel):
         if value is None:
             return None
         return float(value)
+
+
+class MarketStatusCount(BaseModel):
+    status: str
+    count: int
+
+
+class ExperimentVariantSummary(BaseModel):
+    stage: str
+    experiment_name: str
+    experiment_version: str
+    variant_name: str
+    variant_version: str
+    output_count: int
+    last_activity: datetime | None = None
+
+
+class DatasetOverview(BaseModel):
+    generated_at: datetime
+    total_events: int
+    events_with_research: int
+    events_with_forecasts: int
+    total_markets: int
+    markets_with_forecasts: int
+    market_status: list[MarketStatusCount]
+    total_research_artifacts: int
+    total_forecast_results: int
+    research_variants: list[ExperimentVariantSummary]
+    forecast_variants: list[ExperimentVariantSummary]
+    latest_pipeline_run: PipelineRunSummary | None = None

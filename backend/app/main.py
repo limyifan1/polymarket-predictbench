@@ -9,6 +9,7 @@ from . import schemas
 from .core.config import settings
 from .db import get_db, init_db
 from .services.market_service import MarketQuery, MarketService
+from .services.overview_service import OverviewService
 
 app = FastAPI(title="PredictBench API", version="0.1.0", debug=settings.debug)
 
@@ -75,6 +76,12 @@ def _market_service(db=Depends(get_db)) -> MarketService:
     return MarketService(db)
 
 
+def _overview_service(db=Depends(get_db)) -> OverviewService:
+    """Surface dataset-wide metrics for dashboard visualizations."""
+
+    return OverviewService(db)
+
+
 @app.get("/events", response_model=schemas.EventList, tags=["events"])
 def list_events(
     *,
@@ -107,3 +114,10 @@ def get_market(market_id: str, service: MarketService = Depends(_market_service)
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
     return market
+
+
+@app.get("/overview", response_model=schemas.DatasetOverview, tags=["datasets"])
+def dataset_overview(service: OverviewService = Depends(_overview_service)):
+    """Expose aggregate counts for events, research, and forecast outputs."""
+
+    return service.dataset_overview()

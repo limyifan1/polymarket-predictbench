@@ -1,4 +1,4 @@
-import type { EventListResponse, MarketListResponse } from "@/types/market";
+import type { DatasetOverview, EventListResponse, MarketListResponse } from "@/types/market";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const PROD_API_BASE_URL =
@@ -110,4 +110,19 @@ export async function fetchEvents(filters: MarketFilters): Promise<EventListResp
   }
 
   return response.json() as Promise<EventListResponse>;
+}
+
+export async function fetchDatasetOverview(
+  dataset: MarketFilters["dataset"] = "local",
+): Promise<DatasetOverview> {
+  const baseUrl = resolveApiBase(dataset);
+  const response = await fetch(`${baseUrl}/overview`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to load dataset overview: ${response.status}`);
+  }
+
+  return response.json() as Promise<DatasetOverview>;
 }

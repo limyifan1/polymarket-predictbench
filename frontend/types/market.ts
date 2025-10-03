@@ -104,3 +104,33 @@ export type EventListResponse = {
   total: number;
   items: EventWithMarkets[];
 };
+
+export type MarketStatusCount = {
+  status: string;
+  count: number;
+};
+
+export type ExperimentVariantSummary = {
+  stage: string;
+  experiment_name: string;
+  experiment_version: string;
+  variant_name: string;
+  variant_version: string;
+  output_count: number;
+  last_activity: string | null;
+};
+
+export type DatasetOverview = {
+  generated_at: string;
+  total_events: number;
+  events_with_research: number;
+  events_with_forecasts: number;
+  total_markets: number;
+  markets_with_forecasts: number;
+  market_status: MarketStatusCount[];
+  total_research_artifacts: number;
+  total_forecast_results: number;
+  research_variants: ExperimentVariantSummary[];
+  forecast_variants: ExperimentVariantSummary[];
+  latest_pipeline_run: PipelineRunSummary | null;
+};
