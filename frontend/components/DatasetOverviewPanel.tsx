@@ -1,5 +1,5 @@
 import { formatDateTime } from "@/lib/date";
-import type { DatasetOverview, ExperimentVariantSummary } from "@/types/market";
+import type { DatasetOverview, ExperimentVariantSummary, PipelineRunSummary } from "@/types/market";
 
 type DatasetOverviewPanelProps = {
   overview: DatasetOverview;
@@ -30,6 +30,17 @@ function pickTopVariants(variants: ExperimentVariantSummary[], limit = 6): Exper
   return [...variants].sort((a, b) => b.output_count - a.output_count).slice(0, limit);
 }
 
+function formatRunStatus(run: PipelineRunSummary): string {
+  if (!run.environment) {
+    return run.status;
+  }
+  return `${run.status} · ${run.environment}`;
+}
+
+function formatWindowDays(days: number): string {
+  return `${days}d`;
+}
+
 export function DatasetOverviewPanel({ overview }: DatasetOverviewPanelProps) {
   const researchCoverage = computeCoverage(overview.events_with_research, overview.total_events);
   const forecastCoverage = computeCoverage(overview.events_with_forecasts, overview.total_events);
@@ -38,6 +49,8 @@ export function DatasetOverviewPanel({ overview }: DatasetOverviewPanelProps) {
 
   const topResearchVariants = pickTopVariants(overview.research_variants);
   const topForecastVariants = pickTopVariants(overview.forecast_variants);
+  const pipelineRuns = overview.recent_pipeline_runs;
+  const hasPipelineRuns = pipelineRuns.length > 0;
 
   return (
     <section className="overview" aria-labelledby="dataset-overview-heading">
@@ -144,6 +157,45 @@ export function DatasetOverviewPanel({ overview }: DatasetOverviewPanelProps) {
               </p>
             </div>
           </div>
+        </section>
+      </div>
+
+      <div className="overview__grid overview__grid--full">
+        <section className="overview-panel" aria-label="Pipeline run history">
+          <header className="overview-panel__header">
+            <h3 className="overview-panel__title">Pipeline history</h3>
+            <span className="overview-panel__hint">
+              {hasPipelineRuns ? `Showing ${pipelineRuns.length} most recent runs` : "No runs recorded"}
+            </span>
+          </header>
+          {hasPipelineRuns ? (
+            <table className="overview-table overview-table--compact">
+              <thead>
+                <tr>
+                  <th scope="col">Run ID</th>
+                  <th scope="col">Run date</th>
+                  <th scope="col">Target date</th>
+                  <th scope="col">Window</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pipelineRuns.map((run) => (
+                  <tr key={run.run_id}>
+                    <td>
+                      <div className="overview-table__primary">{run.run_id}</div>
+                    </td>
+                    <td className="overview-table__secondary">{formatDateTime(run.run_date)}</td>
+                    <td className="overview-table__secondary">{formatDateTime(run.target_date)}</td>
+                    <td className="overview-table__numeric">{formatWindowDays(run.window_days)}</td>
+                    <td className="overview-table__secondary">{formatRunStatus(run)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="overview-panel__empty">No pipeline history available yet.</p>
+          )}
         </section>
       </div>
 

@@ -1215,6 +1215,10 @@ main.page {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
+.overview__grid--full {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .overview-panel {
   display: flex;
   flex-direction: column;
@@ -1360,6 +1364,16 @@ main.page {
 .overview-table__numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.overview-table--compact th,
+.overview-table--compact td {
+  padding-right: 0.75rem;
+}
+
+.overview-table--compact td:last-child,
+.overview-table--compact th:last-child {
+  padding-right: 0;
 }
 
 @media (max-width: 640px) {

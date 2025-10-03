@@ -146,6 +146,63 @@ function normalizeConfidence(value: string | null): string | null {
   return lower.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function makeDescriptorKey(descriptor: {
+  experiment_name: string;
+  variant_name: string;
+  variant_version: string;
+}): string {
+  return `${descriptor.experiment_name}::${descriptor.variant_name}::${descriptor.variant_version}`;
+}
+
+function formatResearchInputName(artifact: ResearchArtifact): string {
+  const { experiment_name, variant_name, variant_version } = artifact.descriptor;
+
+  const variant = variant_name && variant_name !== "default" ? variant_name : null;
+  const versionHint = variant_version && variant_version !== "unspecified" ? ` v${variant_version}` : "";
+
+  if (variant) {
+    return `${variant}${versionHint} • ${experiment_name}`;
+  }
+
+  if (experiment_name) {
+    return `${experiment_name}${versionHint}`;
+  }
+
+  return artifact.artifact_id ?? "Research artifact";
+}
+
+type ResearchReference = {
+  variant: string;
+  artifactId: string | null;
+};
+
+function extractResearchReferences(
+  payload: Record<string, unknown> | null | undefined,
+): ResearchReference[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const references = payload._research_artifacts;
+  if (!isRecord(references)) {
+    return [];
+  }
+  const results: ResearchReference[] = [];
+  for (const [variant, rawValue] of Object.entries(references)) {
+    if (!variant.trim()) {
+      continue;
+    }
+    let artifactId: string | null = null;
+    if (typeof rawValue === "string") {
+      const trimmed = rawValue.trim();
+      if (trimmed) {
+        artifactId = trimmed;
+      }
+    }
+    results.push({ variant, artifactId });
+  }
+  return results;
+}
+
 function extractResearchSummary(payload: Record<string, unknown> | null | undefined): string | null {
   if (!isRecord(payload)) {
     return null;
@@ -601,9 +658,11 @@ function EventResearch({ research, eventId }: { research: ResearchArtifact[]; ev
 function MarketForecasts({
   results,
   contracts,
+  researchArtifacts,
 }: {
   results: ForecastResult[];
   contracts: Contract[];
+  researchArtifacts: ResearchArtifact[];
 }) {
   const marketProbabilityByOutcome = useMemo(() => {
     const map = new Map<string, number>();
@@ -623,6 +682,26 @@ function MarketForecasts({
     return map;
   }, [contracts]);
 
+  const researchById = useMemo(() => {
+    const map = new Map<string, ResearchArtifact>();
+    for (const artifact of researchArtifacts) {
+      if (!artifact.artifact_id) {
+        continue;
+      }
+      map.set(artifact.artifact_id, artifact);
+    }
+    return map;
+  }, [researchArtifacts]);
+
+  const researchByVariant = useMemo(() => {
+    const map = new Map<string, ResearchArtifact>();
+    for (const artifact of researchArtifacts) {
+      const key = makeDescriptorKey(artifact.descriptor);
+      map.set(key, artifact);
+    }
+    return map;
+  }, [researchArtifacts]);
+
   if (!results.length) {
     return null;
   }
@@ -635,6 +714,14 @@ function MarketForecasts({
           const key = `${result.descriptor.experiment_name}:${result.descriptor.variant_name}:${result.recorded_at}`;
           const prices = extractOutcomePrices(result.payload ?? null);
           const reasoning = extractForecastReasoning(result.payload ?? null);
+          const variantKey = makeDescriptorKey(result.descriptor);
+          const sourceArtifact =
+            (result.source_artifact_id ? researchById.get(result.source_artifact_id) : undefined) ??
+            researchByVariant.get(variantKey) ??
+            null;
+          const researchInputLabel = sourceArtifact
+            ? formatResearchInputName(sourceArtifact)
+            : result.source_artifact_id ?? null;
 
           return (
             <article key={key} className="forecast-card">
@@ -649,6 +736,7 @@ function MarketForecasts({
                   <span>Run {result.run.run_id}</span>
                   <span>{result.run.status}</span>
                   <span>Updated {formatDateTime(result.recorded_at)}</span>
+                  {researchInputLabel ? <span>Research input: {researchInputLabel}</span> : null}
                 </div>
               </header>
               {result.score !== null && result.score !== undefined && !Number.isNaN(result.score) && (
@@ -936,7 +1024,11 @@ export function MarketTable({ events }: { events: EventWithMarkets[] }) {
                               {!market.contracts.length && <li className="market-row__outcome-empty">-</li>}
                             </ul>
 
-                            <MarketForecasts results={market.experiment_results} contracts={market.contracts} />
+                            <MarketForecasts
+                              results={market.experiment_results}
+                              contracts={market.contracts}
+                              researchArtifacts={event.research}
+                            />
                           </div>
                         </div>
                       );
