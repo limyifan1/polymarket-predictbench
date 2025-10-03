@@ -50,6 +50,9 @@
   - `--stage` controls which stages execute (`research`, `forecast`, or `both`).
   - `--include-research` / `--include-forecast` filter variants by name or `suite:variant`.
   - `--debug-dump-dir` points to a directory where JSON payload dumps are written (default comes from `PIPELINE_DEBUG_DUMP_DIR`); use `--no-debug-dump` to disable for a run.
+- `--experiment-override` and `--experiment-override-file` can be used to
+  change experiment parameters without editing suite definitions (see the
+  [Pipeline Runbook](docs/pipeline-runbook.md) for details).
 - Legacy script `python -m scripts.ingest_markets` exists but bypasses processing safeguards—prefer the pipeline.
 
 ## Frontend (Next.js)
