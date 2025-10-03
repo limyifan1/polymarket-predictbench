@@ -132,7 +132,9 @@ Provider abstractions live in `backend/app/services/llm/`.
   helpers.
 - When switching providers, review default tools: Gemini research stages now
   opt into the `google_search` grounding tool by default (the provider will
-  downgrade to `google_search_retrieval` automatically for legacy 1.x models).
+  downgrade to `google_search_retrieval` automatically for legacy 1.x models or
+  environments where the installed `google-generativeai` SDK lacks
+  `google_search` support).
   Supply `tools=[]` or override the tool if you need to disable or customise
   the grounding behaviour.
 

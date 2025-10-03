@@ -11,7 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from app.services.llm.gemini import GeminiProvider
+from app.services.llm.gemini import (
+    GeminiProvider,
+    _DEFAULT_SEARCH_TOOL_KEY,
+    _SUPPORTS_GOOGLE_SEARCH_TOOL,
+)
 from pipelines.context import PipelineContext
 from pipelines.experiments.llm_support import resolve_llm_request
 
@@ -80,7 +84,7 @@ def test_gemini_extract_json_parses_payload(payload: str) -> None:
     assert usage["prompt_token_count"] == 10
 
 
-def test_gemini_default_tools_include_google_search() -> None:
+def test_gemini_default_tools_include_search_tool() -> None:
     context = build_context({"dummy": {"provider": "gemini"}})
     runtime = resolve_llm_request(
         DummyStrategy(),
@@ -92,7 +96,7 @@ def test_gemini_default_tools_include_google_search() -> None:
         default_request_options=None,
     )
     assert runtime.tools is not None
-    assert {"google_search": {}} in runtime.tools
+    assert {_DEFAULT_SEARCH_TOOL_KEY: {}} in runtime.tools
 
 
 def test_gemini_search_tool_remaps_to_legacy_for_1_x_models() -> None:
@@ -110,4 +114,5 @@ def test_gemini_search_tool_remaps_legacy_payload_for_2_x_models() -> None:
         model="gemini-2.5-pro",
         tools=[{"google_search_retrieval": {}}],
     )
-    assert remapped == [{"google_search": {}}]
+    expected_key = "google_search" if _SUPPORTS_GOOGLE_SEARCH_TOOL else "google_search_retrieval"
+    assert remapped == [{expected_key: {}}]

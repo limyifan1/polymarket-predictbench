@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
@@ -19,6 +20,30 @@ from .base import LLMProvider, PipelineContext
 
 _JSON_KEYS = {"temperature", "top_p", "top_k", "max_output_tokens"}
 _UNSUPPORTED_SCHEMA_KEYS = {"additionalProperties", "minimum", "maximum"}
+
+if genai is not None:  # pragma: no cover - runtime detection only
+    try:
+        from google.generativeai.types import Tool as _GenAIToolType
+    except Exception:  # pragma: no cover - defensive
+        _GenAIToolType = None  # type: ignore[assignment]
+else:  # pragma: no cover - runtime detection only
+    _GenAIToolType = None  # type: ignore[assignment]
+
+
+def _detect_google_search_support() -> bool:
+    if _GenAIToolType is None:
+        return False
+    try:
+        signature = inspect.signature(_GenAIToolType)
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return False
+    return "google_search" in signature.parameters
+
+
+_SUPPORTS_GOOGLE_SEARCH_TOOL = _detect_google_search_support()
+_DEFAULT_SEARCH_TOOL_KEY = (
+    "google_search" if _SUPPORTS_GOOGLE_SEARCH_TOOL else "google_search_retrieval"
+)
 
 
 def _prune_schema(value: Any) -> Any:
@@ -176,7 +201,7 @@ class GeminiProvider(LLMProvider):
     ) -> Sequence[Mapping[str, Any]] | None:
         del context
         if stage == "research":
-            return ({"google_search": {}},)
+            return ({_DEFAULT_SEARCH_TOOL_KEY: {}},)
         return None
 
     def json_mode_kwargs(
@@ -284,31 +309,38 @@ class GeminiProvider(LLMProvider):
         model: str,
         tools: Sequence[Mapping[str, Any]],
     ) -> list[Mapping[str, Any]]:
-        model_lower = model.lower()
-        use_legacy_search = model_lower.startswith("gemini-1")
+        model_lower = (model or "").lower()
+        prefer_modern_search = _SUPPORTS_GOOGLE_SEARCH_TOOL and not model_lower.startswith(
+            "gemini-1"
+        )
         remapped: list[Mapping[str, Any]] = []
         for tool in tools:
             if "google_search" in tool:
                 config = dict(tool.get("google_search") or {})
-                if use_legacy_search:
-                    logger.debug(
-                        "Remapping google_search to google_search_retrieval for model {}",
-                        model,
-                    )
-                    remapped.append({"google_search_retrieval": config})
-                else:
+                if prefer_modern_search:
                     remapped.append({"google_search": config})
+                else:
+                    if _SUPPORTS_GOOGLE_SEARCH_TOOL:
+                        logger.debug(
+                            "Remapping google_search to google_search_retrieval for model {}",
+                            model,
+                        )
+                    else:
+                        logger.debug(
+                            "Remapping google_search to google_search_retrieval because installed google-generativeai SDK lacks google_search support",
+                        )
+                    remapped.append({"google_search_retrieval": config})
                 continue
             if "google_search_retrieval" in tool:
                 config = dict(tool.get("google_search_retrieval") or {})
-                if use_legacy_search:
-                    remapped.append({"google_search_retrieval": config})
-                else:
+                if prefer_modern_search:
                     logger.debug(
                         "Remapping google_search_retrieval to google_search for model {}",
                         model,
                     )
                     remapped.append({"google_search": config})
+                else:
+                    remapped.append({"google_search_retrieval": config})
                 continue
             remapped.append(tool)
         return remapped
