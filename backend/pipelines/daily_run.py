@@ -16,6 +16,7 @@ from typing import Any, Callable, ContextManager, FrozenSet
 from uuid import uuid4
 
 from loguru import logger
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.core.config import Settings, get_settings
@@ -1128,6 +1129,40 @@ def _prepare_experiment_metadata(
     return metas, index
 
 
+def _verify_database_read_write(
+    session_factory: Callable[[], ContextManager[Any]],
+) -> None:
+    temp_suffix = uuid4().hex[:8]
+    temp_table = f"pipeline_healthcheck_{temp_suffix}"
+    logger.info(
+        "Running database read/write check using temporary table {}",
+        temp_table,
+    )
+
+    try:
+        with session_factory() as session:
+            session.execute(text("SELECT 1"))
+            session.execute(
+                text(
+                    f"CREATE TEMP TABLE {temp_table} (value TEXT) ON COMMIT DROP"
+                )
+            )
+            session.execute(
+                text(f"INSERT INTO {temp_table} (value) VALUES (:value)"),
+                {"value": "ok"},
+            )
+            result = session.execute(
+                text(f"SELECT value FROM {temp_table} WHERE value = :value"),
+                {"value": "ok"},
+            )
+            row = result.first()
+            if row is None or row[0] != "ok":
+                raise RuntimeError("Verification value missing from temporary table")
+    except Exception:
+        logger.exception("Database read/write verification failed")
+        raise
+    else:
+        logger.info("Database read/write check completed successfully")
 
 
 def run_pipeline(
@@ -1168,6 +1203,8 @@ def run_pipeline(
     if session_factory is None:
         init_db_fn()
         session_factory = session_scope
+
+    _verify_database_read_write(session_factory)
 
     processing_repo_factory = processing_repo_factory or (
         lambda session: ProcessingRepository(session)
