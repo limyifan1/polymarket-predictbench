@@ -136,12 +136,30 @@ JSON artifact mirrors the printed summary for automation and alerting.
 
 ## Troubleshooting checklist
 1. Run with `--dry-run --limit 5` to reproduce quickly.
-2. Enable debug dumps and inspect the generated JSON payloads.
-3. Check `research_artifacts` / `experiment_runs` tables to confirm which
+2. Inspect the debug dump JSON payloads (written automatically unless
+   `--no-debug-dump` is passed).
+3. Replay persisted artifacts with
+   `uv run python -m pipelines.replay_debug_dump --run-id <run>` if the run
+   died after LLM execution but before database writes.
+4. Check `research_artifacts` / `experiment_runs` tables to confirm which
    variants succeeded.
-4. Review log output for `ExperimentExecutionError` or missing dependencies.
-5. Confirm environment variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`,
+5. Review log output for `ExperimentExecutionError` or missing dependencies.
+6. Confirm environment variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`,
    `SUPABASE_DB_URL`) are available when targeting production backends.
+
+## Replaying debug dumps after DB errors
+- `pipelines.replay_debug_dump` reuses the debug dump JSON to insert
+  `processed_events`, markets, research artifacts, and forecasts without
+  re-running LLM calls.
+- Minimum invocation:
+  ```bash
+  uv run python -m pipelines.replay_debug_dump --run-id <run-id>
+  ```
+- Use `--dump-dir` when dumps live outside `PIPELINE_DEBUG_DUMP_DIR`; pass
+  `--dry-run` to validate dumps without touching the database.
+- The script reuses experiment run identifiers captured in the dumps; make sure
+  the original pipeline run created the run metadata (the CLI does this before
+  event processing).
 
 ## Scheduling (GitHub Actions)
 - `.github/workflows/daily-pipeline.yml` triggers at 07:00 UTC and on manual

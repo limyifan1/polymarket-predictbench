@@ -71,8 +71,12 @@ the backend, pipeline, and frontend via `pydantic-settings`.
   summary artifact path stable for downstream tooling.
 
 ## Debugging tips
-- Enable debug dumps (`--debug-dump-dir` CLI flag or `PIPELINE_DEBUG_DUMP_DIR`)
-  to capture LLM request/response payloads for inspection.
+- Debug dumps now write by default to the directory configured via
+  `PIPELINE_DEBUG_DUMP_DIR` (or `--debug-dump-dir`); disable only when you are
+  certain you do not need to replay LLM outputs.
+- Rehydrate LLM artifacts after a transient database outage with
+  `uv run python -m pipelines.replay_debug_dump --run-id <run>` (optionally pass
+  `--dump-dir` when dumps live outside the default path).
 - Query FastAPI endpoints directly:
   - `curl "http://localhost:8000/healthz"`
   - `curl "http://localhost:8000/markets?status=open" | jq '.items | length'`

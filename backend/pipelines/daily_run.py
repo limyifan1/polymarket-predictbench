@@ -632,6 +632,7 @@ def _serialize_event(event: NormalizedEvent | None) -> dict[str, Any] | None:
         "icon_url": event.icon_url,
         "series_slug": event.series_slug,
         "series_title": event.series_title,
+        "raw_data": event.raw_data,
     }
 
 
@@ -640,6 +641,7 @@ def _serialize_market(market: NormalizedMarket) -> dict[str, Any]:
         "market_id": market.market_id,
         "slug": market.slug,
         "question": market.question,
+        "description": market.description,
         "category": market.category,
         "sub_category": market.sub_category,
         "open_time": market.open_time.isoformat() if market.open_time else None,
@@ -648,6 +650,8 @@ def _serialize_market(market: NormalizedMarket) -> dict[str, Any]:
         "volume_usd": market.volume_usd,
         "liquidity_usd": market.liquidity_usd,
         "fee_bps": market.fee_bps,
+        "icon_url": market.icon_url,
+        "raw_data": market.raw_data,
         "contracts": [
             {
                 "contract_id": contract.contract_id,
@@ -656,6 +660,7 @@ def _serialize_market(market: NormalizedMarket) -> dict[str, Any]:
                 "current_price": contract.current_price,
                 "confidence": contract.confidence,
                 "implied_probability": contract.implied_probability,
+                "raw_data": contract.raw_data,
             }
             for contract in market.contracts
         ],
@@ -691,6 +696,7 @@ def _dump_debug_artifacts(
         entry: dict[str, Any] = {
             "variant": record.meta.strategy_name,
             "version": record.meta.strategy_version,
+            "experiment_run_id": record.meta.run_identifier,
             "artifact_id": record.artifact_id,
             "artifact_uri": record.output.artifact_uri,
             "artifact_hash": record.output.artifact_hash,
@@ -706,6 +712,9 @@ def _dump_debug_artifacts(
             entry: dict[str, Any] = {
                 "outcomePrices": record.output.outcome_prices,
                 "reasoning": record.output.reasoning,
+                "experiment_run_id": record.meta.run_identifier,
+                "variant": record.meta.strategy_name,
+                "version": record.meta.strategy_version,
             }
             if record.output.score is not None:
                 entry["score"] = record.output.score
@@ -1177,27 +1186,37 @@ def run_pipeline(
     filters = _build_filters(settings=settings, start=start_bound, end=end_bound)
 
     debug_dump_dir: Path | None = None
-    if not args.no_debug_dump and args.debug_dump_dir:
-        debug_dump_dir = Path(args.debug_dump_dir).expanduser().resolve()
-        debug_dump_dir.mkdir(parents=True, exist_ok=True)
+    if not args.no_debug_dump:
+        base_dir = args.debug_dump_dir or settings.pipeline_debug_dump_dir
+        if base_dir:
+            debug_dump_dir = Path(base_dir).expanduser().resolve()
+        elif args.dry_run:
+            debug_dump_dir = Path("./dry_run_outputs").expanduser().resolve()
+
+        if debug_dump_dir is not None:
+            debug_dump_dir.mkdir(parents=True, exist_ok=True)
+            if args.dry_run and not args.debug_dump_dir:
+                logger.info(
+                    "Dry-run mode writing artifacts to {}",
+                    debug_dump_dir,
+                )
+            else:
+                logger.info(
+                    "Writing pipeline artifacts to {}",
+                    debug_dump_dir,
+                )
     elif args.dry_run:
-        fallback_base = (
-            args.debug_dump_dir
-            or settings.pipeline_debug_dump_dir
-            or "./dry_run_outputs"
+        fallback_dir = (
+            Path(args.debug_dump_dir).expanduser().resolve()
+            if args.debug_dump_dir
+            else Path("./dry_run_outputs").expanduser().resolve()
         )
-        debug_dump_dir = Path(fallback_base).expanduser().resolve()
-        debug_dump_dir.mkdir(parents=True, exist_ok=True)
-        if args.no_debug_dump:
-            logger.info(
-                "Dry-run mode overriding --no-debug-dump; writing artifacts to {}",
-                debug_dump_dir,
-            )
-        else:
-            logger.info(
-                "Dry-run mode writing artifacts to {}",
-                debug_dump_dir,
-            )
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        debug_dump_dir = fallback_dir
+        logger.info(
+            "Dry-run mode overriding --no-debug-dump; writing artifacts to {}",
+            debug_dump_dir,
+        )
 
     experiment_metas, experiment_meta_index = _prepare_experiment_metadata(suites)
 
