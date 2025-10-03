@@ -52,6 +52,59 @@ All commands assume you are inside `backend/` with dependencies installed and
 - `--debug-dump-dir <path>` – override where JSON dumps land; use
   `--no-debug-dump` to disable dumps entirely.
 - `--list-experiments` – print the suite manifest and exit without running.
+- `--experiment-override <spec>` – apply a single experiment config override
+  (repeatable).
+- `--experiment-override-file <path>` – load overrides from a JSON file
+  (repeatable).
+
+## Overriding Experiment Configurations
+For one-off tests or debugging, you can change experiment parameters without
+modifying suite definitions. Overrides are applied in the following order (last
+one wins):
+1. Suite-level defaults (in `BaseExperimentSuite.experiment_overrides()`).
+2. Overrides from files (`--experiment-override-file`).
+3. Inline overrides (`--experiment-override`).
+
+### Inline Overrides (`--experiment-override`)
+The spec format is `experiment_name.key=value`, where `experiment_name` matches
+the identifier from the `--list-experiments` manifest (e.g., `openai:research:openai_web_search`).
+
+- **Example**: Change a model for a single run
+  ```bash
+  uv run python -m pipelines.daily_run --dry-run --limit 1 \
+    --experiment-override openai:research:openai_web_search.model=gpt-4-turbo
+  ```
+- **Nested values**: Use dot notation for nested keys.
+  ```bash
+  uv run python -m pipelines.daily_run --dry-run --limit 1 \
+    --experiment-override openai:research:openai_web_search.prompt_params.max_tokens=500
+  ```
+- **Types**: Values are parsed automatically (e.g., `true`, `123`, `null`).
+  Wrap in quotes if the shell requires it.
+
+### File Overrides (`--experiment-override-file`)
+Provide a JSON file where keys are experiment names and values are config objects.
+This is useful for managing complex or frequently used overrides.
+
+- **Example `debug_overrides.json`**:
+  ```json
+  {
+    "openai:research:openai_web_search": {
+      "model": "gpt-4-turbo",
+      "prompt_params": {
+        "temperature": 0.5
+      }
+    },
+    "gemini:forecast:gemini_simple": {
+      "model": "gemini-1.5-flash"
+    }
+  }
+  ```
+- **Usage**:
+  ```bash
+  uv run python -m pipelines.daily_run --dry-run \
+    --experiment-override-file debug_overrides.json
+  ```
 
 ## What gets persisted
 - `processing_runs` – high-level metadata (run ID, timestamps, target window,
