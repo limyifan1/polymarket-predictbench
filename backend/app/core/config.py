@@ -127,8 +127,8 @@ class Settings(BaseSettings):
     gemini_additional_api_keys: list[str] | str = Field(
         default_factory=list,
         description=(
-            "Optional fallback Gemini API keys; the provider will cycle through them "
-            "if the primary key is rate-limited or fails."
+            "Optional fallback Gemini API keys; the provider randomises the order "
+            "per request and falls back if a key is rate-limited or fails."
         ),
     )
     experiment_overrides: dict[str, dict[str, Any]] = Field(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import random
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
@@ -84,6 +85,14 @@ class _GeminiClient:
             )
         options = dict(self.client_options or {})
         genai.configure(api_key=api_key, **options)
+
+    def api_keys_for_request(self) -> tuple[str, ...]:
+        if len(self.api_keys) <= 1:
+            return self.api_keys
+        # Randomise the order so the first attempt distributes load across keys.
+        shuffled = list(self.api_keys)
+        random.shuffle(shuffled)
+        return tuple(shuffled)
 
 
 @dataclass(slots=True)
@@ -408,7 +417,7 @@ class GeminiProvider(LLMProvider):
                 model=request.model,
                 tools=tool_payload,
             )
-        api_keys = request.client.api_keys
+        api_keys = request.client.api_keys_for_request()
         if not api_keys:
             raise ExperimentExecutionError("GEMINI_API_KEY is not configured")
         last_error: Exception | None = None
