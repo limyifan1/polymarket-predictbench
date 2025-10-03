@@ -188,7 +188,8 @@ function extractResearchReferences(
   }
   const results: ResearchReference[] = [];
   for (const [variant, rawValue] of Object.entries(references)) {
-    if (!variant.trim()) {
+    const key = variant.trim();
+    if (!key) {
       continue;
     }
     let artifactId: string | null = null;
@@ -198,7 +199,7 @@ function extractResearchReferences(
         artifactId = trimmed;
       }
     }
-    results.push({ variant, artifactId });
+    results.push({ variant: key, artifactId });
   }
   return results;
 }
@@ -702,6 +703,14 @@ function MarketForecasts({
     return map;
   }, [researchArtifacts]);
 
+  const researchByVariantName = useMemo(() => {
+    const map = new Map<string, ResearchArtifact>();
+    for (const artifact of researchArtifacts) {
+      map.set(artifact.descriptor.variant_name, artifact);
+    }
+    return map;
+  }, [researchArtifacts]);
+
   if (!results.length) {
     return null;
   }
@@ -715,13 +724,31 @@ function MarketForecasts({
           const prices = extractOutcomePrices(result.payload ?? null);
           const reasoning = extractForecastReasoning(result.payload ?? null);
           const variantKey = makeDescriptorKey(result.descriptor);
-          const sourceArtifact =
-            (result.source_artifact_id ? researchById.get(result.source_artifact_id) : undefined) ??
-            researchByVariant.get(variantKey) ??
-            null;
-          const researchInputLabel = sourceArtifact
-            ? formatResearchInputName(sourceArtifact)
-            : result.source_artifact_id ?? null;
+          const references = extractResearchReferences(result.payload ?? null);
+          let researchInputLabels = Array.from(
+            new Set(
+              references.map((reference) => {
+                const artifact =
+                  (reference.artifactId ? researchById.get(reference.artifactId) : undefined) ??
+                  researchByVariantName.get(reference.variant) ??
+                  null;
+                return artifact ? formatResearchInputName(artifact) : reference.variant;
+              }),
+            ),
+          ).filter(Boolean);
+
+          if (!researchInputLabels.length) {
+            const fallbackArtifact =
+              (result.source_artifact_id ? researchById.get(result.source_artifact_id) : undefined) ??
+              researchByVariantName.get(result.descriptor.variant_name) ??
+              researchByVariant.get(variantKey) ??
+              null;
+            if (fallbackArtifact) {
+              researchInputLabels = [formatResearchInputName(fallbackArtifact)];
+            } else if (result.source_artifact_id) {
+              researchInputLabels = [result.source_artifact_id];
+            }
+          }
 
           return (
             <article key={key} className="forecast-card">
@@ -736,7 +763,13 @@ function MarketForecasts({
                   <span>Run {result.run.run_id}</span>
                   <span>{result.run.status}</span>
                   <span>Updated {formatDateTime(result.recorded_at)}</span>
-                  {researchInputLabel ? <span>Research input: {researchInputLabel}</span> : null}
+                  {researchInputLabels.length ? (
+                    <span>
+                      Research {researchInputLabels.length > 1 ? "inputs" : "input"}:
+                      {' '}
+                      {researchInputLabels.join(", ")}
+                    </span>
+                  ) : null}
                 </div>
               </header>
               {result.score !== null && result.score !== undefined && !Number.isNaN(result.score) && (

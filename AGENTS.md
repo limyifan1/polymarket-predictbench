@@ -93,8 +93,7 @@
 - Keep documentation in sync (`README.md`, `docs/`, and this file) when workflows or commands change.
 
 ## Agent checklist before submitting changes
-- [ ] Updated `.env` or documented new config knobs.
-- [ ] Ran the daily pipeline with `--dry-run` if ingestion logic changed.
+- [ ] Ran the daily pipeline with `--dry-run` and `--limit 1` if ingestion logic changed.
 - [ ] Confirmed API + frontend dev servers start without errors.
 - [ ] Executed `npm run lint` for UI changes and manual sanity checks for backend changes.
 - [ ] Added/updated docs or comments for non-obvious logic.
