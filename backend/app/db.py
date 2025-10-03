@@ -8,6 +8,27 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from .core.config import settings
 
 
+def _psycopg_supports_cache_flag(version_str: str) -> bool:
+    """Return True if psycopg accepts the prepared_statement_cache_size option."""
+
+    parts: list[int] = []
+    for token in version_str.split("."):
+        digits = ""
+        for char in token:
+            if char.isdigit():
+                digits += char
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(parts) >= 3:
+            break
+    if not parts:
+        return False
+    return tuple(parts) < (3, 2)
+
+
 def _ensure_sqlite_path(url: str) -> None:
     if not url.startswith("sqlite"):
         return
@@ -49,8 +70,15 @@ def _create_engine(url: str):
             # PgBouncer's transaction pooler rejects PREPARE, so disable psycopg's
             # automatic server-side statements to keep Supabase connections healthy.
             if driver == "psycopg":
-                connect_args.setdefault("prepare_threshold", 0)
-                connect_args.setdefault("prepared_statement_cache_size", 0)
+                connect_args.setdefault("prepare_threshold", None)
+
+                try:  # psycopg<3.2 accepted prepared_statement_cache_size
+                    import psycopg  # type: ignore[import]
+                except ImportError:  # pragma: no cover - psycopg always available in prod
+                    pass
+                else:
+                    if _psycopg_supports_cache_flag(psycopg.__version__):
+                        connect_args.setdefault("prepared_statement_cache_size", 0)
 
     if connect_args:
         engine_kwargs["connect_args"] = connect_args
