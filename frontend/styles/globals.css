@@ -58,7 +58,7 @@ select {
 main.page {
   max-width: 1160px;
   margin: 0 auto;
-  padding: 3rem 1.75rem 4rem;
+  padding: 2.25rem 1.25rem 3rem;
   display: flex;
   flex-direction: column;
   gap: 2.5rem;
@@ -66,14 +66,14 @@ main.page {
 
 @media (min-width: 1024px) {
   main.page {
-    padding: 4rem 0 5rem;
+    padding: 3rem 0 4rem;
   }
 }
 
 .page__intro {
   display: grid;
   gap: 1.75rem;
-  padding: 2.25rem;
+  padding: 1.75rem;
   background: linear-gradient(140deg, rgba(255, 255, 255, 0.9) 0%, rgba(248, 250, 252, 0.95) 100%);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(203, 213, 225, 0.65);
@@ -157,7 +157,7 @@ main.page {
   display: flex;
   flex-direction: column;
   gap: 1.6rem;
-  padding: 1.85rem 2rem;
+  padding: 1.5rem 1.75rem;
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
@@ -639,7 +639,13 @@ main.page {
 .event-research__grid {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 720px) {
+  .event-research__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .research-card {
@@ -826,6 +832,22 @@ main.page {
 .forecast-card__table td {
   padding: 0.35rem 0.4rem;
   text-align: left;
+}
+
+.forecast-card__delta {
+  font-weight: 600;
+}
+
+.forecast-card__delta[data-direction="positive"] {
+  color: #047857;
+}
+
+.forecast-card__delta[data-direction="negative"] {
+  color: #b91c1c;
+}
+
+.forecast-card__delta[data-direction="neutral"] {
+  color: var(--color-text-subtle);
 }
 
 .forecast-card__table thead {
