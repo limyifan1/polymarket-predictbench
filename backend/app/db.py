@@ -31,6 +31,7 @@ def _create_engine(url: str):
 
     parsed = make_url(url)
     backend = parsed.get_backend_name()
+    driver = parsed.get_driver_name()
 
     if backend == "sqlite":
         connect_args["check_same_thread"] = False
@@ -45,10 +46,11 @@ def _create_engine(url: str):
             connect_args.setdefault("keepalives_idle", 120)
             connect_args.setdefault("keepalives_interval", 30)
             connect_args.setdefault("keepalives_count", 5)
-            # PgBouncer in transaction-pooling mode does not support reusing server-side
-            # prepared statements; disable them so psycopg does not reissue duplicates
-            # during large batch inserts (see GitHub Actions daily pipeline failures).
-            connect_args.setdefault("prepare_threshold", 0)
+            # PgBouncer's transaction pooler rejects PREPARE, so disable psycopg's
+            # automatic server-side statements to keep Supabase connections healthy.
+            if driver == "psycopg":
+                connect_args.setdefault("prepare_threshold", 0)
+                connect_args.setdefault("prepared_statement_cache_size", 0)
 
     if connect_args:
         engine_kwargs["connect_args"] = connect_args

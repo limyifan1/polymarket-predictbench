@@ -65,7 +65,8 @@ class OverviewService:
         research_variants = list(self._summarize_research_variants())
         forecast_variants = list(self._summarize_forecast_variants())
 
-        latest_pipeline_run = self._load_latest_pipeline_run()
+        recent_pipeline_runs = self._load_recent_pipeline_runs(limit=10)
+        latest_pipeline_run = recent_pipeline_runs[0] if recent_pipeline_runs else None
 
         return DatasetOverview(
             generated_at=datetime.now(timezone.utc),
@@ -80,6 +81,7 @@ class OverviewService:
             research_variants=research_variants,
             forecast_variants=forecast_variants,
             latest_pipeline_run=latest_pipeline_run,
+            recent_pipeline_runs=recent_pipeline_runs,
         )
 
     # ------------------------------------------------------------------
@@ -265,22 +267,26 @@ class OverviewService:
                 last_activity=latest,
             )
 
-    def _load_latest_pipeline_run(self) -> PipelineRunSummary | None:
-        latest = (
+    def _load_recent_pipeline_runs(self, *, limit: int = 10) -> list[PipelineRunSummary]:
+        rows = (
             self._session.execute(
-                select(ProcessingRun).order_by(ProcessingRun.started_at.desc()).limit(1)
-            ).scalar_one_or_none()
+                select(ProcessingRun).order_by(ProcessingRun.started_at.desc()).limit(limit)
+            ).scalars()
         )
-        if latest is None:
-            return None
-        return PipelineRunSummary(
-            run_id=latest.run_id,
-            run_date=latest.run_date,
-            target_date=latest.target_date,
-            window_days=latest.window_days,
-            status=latest.status,
-            environment=latest.environment,
-        )
+
+        summaries: list[PipelineRunSummary] = []
+        for record in rows:
+            summaries.append(
+                PipelineRunSummary(
+                    run_id=record.run_id,
+                    run_date=record.run_date,
+                    target_date=record.target_date,
+                    window_days=record.window_days,
+                    status=record.status,
+                    environment=record.environment,
+                )
+            )
+        return summaries
 
     def _normalize_market_status(self, rows: list[tuple[str | None, int]]) -> list[MarketStatusCount]:
         counts: dict[str, int] = {}

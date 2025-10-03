@@ -176,3 +176,4 @@ class DatasetOverview(BaseModel):
     research_variants: list[ExperimentVariantSummary]
     forecast_variants: list[ExperimentVariantSummary]
     latest_pipeline_run: PipelineRunSummary | None = None
+    recent_pipeline_runs: list[PipelineRunSummary] = Field(default_factory=list)

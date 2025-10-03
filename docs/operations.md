@@ -58,6 +58,10 @@ the backend, pipeline, and frontend via `pydantic-settings`.
 - Production / CI runs set `ENVIRONMENT=production`, which enforces presence of
   `SUPABASE_DB_URL` and upgrades it to `postgresql+psycopg://` with
   `sslmode=require` for PgBouncer compatibility.
+- The SQLAlchemy engine disables psycopg prepared statements (`prepare_threshold=0`
+  and `prepared_statement_cache_size=0`) so Supabase's transaction pooler never
+  sees unsupported `PREPARE` calls. Leave these connect args intact when
+  customising database configuration.
 - Repository helpers in `app/repositories/` encapsulate insert logic. Avoid
   writing ad-hoc SQL in new code paths.
 

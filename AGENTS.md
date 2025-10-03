@@ -25,6 +25,7 @@
 ### Database and environment
 - Default dev DB: `sqlite:///../data/predictbench.db` relative to `backend/` (created automatically).
 - Production runs (`ENVIRONMENT=production`) must provide `SUPABASE_DB_URL`; the config normalizes it to `postgresql+psycopg://` and enforces `sslmode=require`.
+- Supabase's transaction pooler drops `PREPARE` calls, so the SQLAlchemy engine sets psycopg's `prepare_threshold=0` and `prepared_statement_cache_size=0`—leave these intact when adjusting database options.
 - `SUPABASE_SERVICE_ROLE_KEY` is required for CI/automation when writing to Supabase.
 - Extra Polymarket filters live in `INGESTION_FILTERS` (JSON string) and `INGESTION_PAGE_SIZE`.
 - `GEMINI_ADDITIONAL_API_KEYS` accepts a comma-separated or JSON list of fallback Gemini API keys; the LLM service randomises the order per request and falls back if a key is rate-limited or errors.

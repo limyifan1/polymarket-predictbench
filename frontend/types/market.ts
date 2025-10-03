@@ -133,4 +133,5 @@ export type DatasetOverview = {
   research_variants: ExperimentVariantSummary[];
   forecast_variants: ExperimentVariantSummary[];
   latest_pipeline_run: PipelineRunSummary | null;
+  recent_pipeline_runs: PipelineRunSummary[];
 };
