@@ -487,90 +487,112 @@ function formatUrlHost(url: string): string {
   }
 }
 
-function EventResearch({ research }: { research: ResearchArtifact[] }) {
+function EventResearch({ research, eventId }: { research: ResearchArtifact[]; eventId: string }) {
+  const [collapsed, setCollapsed] = useState(false);
+
   if (!research.length) {
     return null;
   }
 
-  return (
-    <section className="event-research" aria-label="Experiment research summaries">
-      <header className="event-research__header">
-        <h4 className="event-research__title">Research briefs</h4>
-        <p className="event-research__subtitle">
-          Synthesized evidence produced during the latest research-stage experiment runs for this event.
-        </p>
-      </header>
-      <div className="event-research__grid">
-        {research.map((artifact) => {
-          const content = buildResearchCardContent(artifact);
-          const summary = content.summary;
-          const insights = content.insights.slice(0, 4);
-          const sources = content.sources.slice(0, 4);
-          const confidence = content.confidence;
-          const key = artifact.artifact_id ?? `${artifact.descriptor.experiment_name}:${artifact.descriptor.variant_name}`;
+  const bodyId = `event-research-body-${eventId}`;
 
-          return (
-            <article key={key} className="research-card">
-              <header className="research-card__header">
-                <div className="research-card__heading">
-                  <span className="badge">
-                    {artifact.descriptor.variant_name} v{artifact.descriptor.variant_version}
-                  </span>
-                  <span className="research-card__experiment">
-                    {artifact.descriptor.experiment_name} · stage {artifact.descriptor.stage}
-                  </span>
-                </div>
-                <div className="research-card__meta">
-                  <span>Run {artifact.run.run_id}</span>
-                  <span>Updated {formatDateTime(artifact.updated_at)}</span>
-                  {artifact.pipeline_run ? (
-                    <span>
-                      Pipeline {artifact.pipeline_run.run_date} ({artifact.pipeline_run.environment ?? "local"})
+  return (
+    <section
+      className={`event-research${collapsed ? " event-research--collapsed" : ""}`}
+      aria-label="Experiment research summaries"
+      data-collapsed={collapsed ? "true" : "false"}
+    >
+      <header className="event-research__header">
+        <div className="event-research__intro">
+          <h4 className="event-research__title">Research briefs</h4>
+          <p className="event-research__subtitle">
+            Synthesized evidence produced during the latest research-stage experiment runs for this event.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="event-research__toggle"
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+          onClick={() => setCollapsed((prev) => !prev)}
+        >
+          {collapsed ? "Show briefs" : "Hide briefs"}
+        </button>
+      </header>
+      <div className="event-research__body" id={bodyId} hidden={collapsed}>
+        <div className="event-research__grid">
+          {research.map((artifact) => {
+            const content = buildResearchCardContent(artifact);
+            const summary = content.summary;
+            const insights = content.insights.slice(0, 4);
+            const sources = content.sources.slice(0, 4);
+            const confidence = content.confidence;
+            const key =
+              artifact.artifact_id ?? `${artifact.descriptor.experiment_name}:${artifact.descriptor.variant_name}`;
+
+            return (
+              <article key={key} className="research-card">
+                <header className="research-card__header">
+                  <div className="research-card__heading">
+                    <span className="badge">
+                      {artifact.descriptor.variant_name} v{artifact.descriptor.variant_version}
                     </span>
-                  ) : null}
-                </div>
-              </header>
-              {summary && <p className="research-card__summary">{summary}</p>}
-              {confidence && <p className="research-card__confidence">Confidence: {confidence}</p>}
-              {insights.length > 0 && (
-                <div className="research-card__section">
-                  <h5>Key insights</h5>
-                  <ul className="research-card__list">
-                    {insights.map((insight, index) => (
-                      <li key={`${key}-insight-${index}`}>{insight}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {sources.length > 0 && (
-                <div className="research-card__section">
-                  <h5>Primary sources</h5>
-                  <ul className="research-card__sources">
-                    {sources.map((source, index) => (
-                      <li key={`${key}-source-${index}`}>
-                        <a href={source.url} target="_blank" rel="noopener noreferrer">
-                          {source.title}
-                        </a>
-                        <span className="research-card__source-host">{formatUrlHost(source.url)}</span>
-                        {source.snippet && <p className="research-card__source-snippet">{source.snippet}</p>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {artifact.artifact_uri && (
-                <a
-                  className="research-card__artifact"
-                  href={artifact.artifact_uri}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  View full artifact
-                </a>
-              )}
-            </article>
-          );
-        })}
+                    <span className="research-card__experiment">
+                      {artifact.descriptor.experiment_name} · stage {artifact.descriptor.stage}
+                    </span>
+                  </div>
+                  <div className="research-card__meta">
+                    <span>Run {artifact.run.run_id}</span>
+                    <span>Updated {formatDateTime(artifact.updated_at)}</span>
+                    {artifact.pipeline_run ? (
+                      <span>
+                        Pipeline {artifact.pipeline_run.run_date} ({artifact.pipeline_run.environment ?? "local"})
+                      </span>
+                    ) : null}
+                  </div>
+                </header>
+                {summary && <p className="research-card__summary">{summary}</p>}
+                {confidence && <p className="research-card__confidence">Confidence: {confidence}</p>}
+                {insights.length > 0 && (
+                  <div className="research-card__section">
+                    <h5>Key insights</h5>
+                    <ul className="research-card__list">
+                      {insights.map((insight, index) => (
+                        <li key={`${key}-insight-${index}`}>{insight}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {sources.length > 0 && (
+                  <div className="research-card__section">
+                    <h5>Primary sources</h5>
+                    <ul className="research-card__sources">
+                      {sources.map((source, index) => (
+                        <li key={`${key}-source-${index}`}>
+                          <a href={source.url} target="_blank" rel="noopener noreferrer">
+                            {source.title}
+                          </a>
+                          <span className="research-card__source-host">{formatUrlHost(source.url)}</span>
+                          {source.snippet && <p className="research-card__source-snippet">{source.snippet}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {artifact.artifact_uri && (
+                  <a
+                    className="research-card__artifact"
+                    href={artifact.artifact_uri}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    View full artifact
+                  </a>
+                )}
+              </article>
+            );
+          })}
+        </div>
       </div>
     </section>
   );
@@ -661,7 +683,7 @@ function MarketForecasts({
                           ? "negative"
                           : "neutral";
 
-                      return (
+                        return (
                         <tr key={`${key}-${item.outcome}`}>
                           <td>{item.outcome}</td>
                           <td>${item.price.toFixed(3)}</td>
@@ -706,6 +728,8 @@ function MarketForecasts({
 
 export function MarketTable({ events }: { events: EventWithMarkets[] }) {
   const [expandedMarkets, setExpandedMarkets] = useState<Record<string, boolean>>({});
+  const [collapsedEvents, setCollapsedEvents] = useState<Record<string, boolean>>({});
+  const [collapsedMarkets, setCollapsedMarkets] = useState<Record<string, boolean>>({});
   const rows = useMemo(() => events, [events]);
 
   return (
@@ -729,30 +753,52 @@ export function MarketTable({ events }: { events: EventWithMarkets[] }) {
             const { totalVolume, totalLiquidity, nextClose } = summarizeEvent(event);
             const eventDescription = primaryLine(event.description);
             const polymarketEventUrl = event.slug ? `https://polymarket.com/event/${event.slug}` : null;
+            const eventCollapsed = Boolean(collapsedEvents[event.event_id]);
+            const eventBodyId = `event-card-body-${event.event_id}`;
 
             return (
               <article
                 key={event.event_id}
-                className="event-card"
+                className={`event-card${eventCollapsed ? " event-card--collapsed" : ""}`}
+                data-collapsed={eventCollapsed ? "true" : "false"}
               >
                 <header className="event-card__header">
-                  <div className="event-card__title-group">
-                    <h3 className="event-card__title">
-                      {polymarketEventUrl ? (
-                        <a
-                          href={polymarketEventUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="event-card__link"
-                        >
-                          {event.title ?? event.slug ?? event.event_id}
-                        </a>
-                      ) : (
-                        event.title ?? event.slug ?? event.event_id
-                      )}
-                    </h3>
-                    <span className="badge">{event.market_count} markets</span>
+                  <div className="event-card__title-row">
+                    <div className="event-card__title-group">
+                      <h3 className="event-card__title">
+                        {polymarketEventUrl ? (
+                          <a
+                            href={polymarketEventUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="event-card__link"
+                          >
+                            {event.title ?? event.slug ?? event.event_id}
+                          </a>
+                        ) : (
+                          event.title ?? event.slug ?? event.event_id
+                        )}
+                      </h3>
+                      <span className="badge">{event.market_count} markets</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="event-card__toggle"
+                      aria-expanded={!eventCollapsed}
+                      aria-controls={eventBodyId}
+                      onClick={() =>
+                        setCollapsedEvents((prev) => ({
+                          ...prev,
+                          [event.event_id]: !eventCollapsed,
+                        }))
+                      }
+                    >
+                      {eventCollapsed ? "Show event" : "Hide event"}
+                    </button>
                   </div>
+                </header>
+
+                <div className="event-card__body" id={eventBodyId} hidden={eventCollapsed}>
                   {eventDescription && <p className="event-card__description">{eventDescription}</p>}
                   <dl className="event-card__stats">
                     <div>
@@ -768,108 +814,134 @@ export function MarketTable({ events }: { events: EventWithMarkets[] }) {
                       <dd>{nextClose ? formatCloseDate(nextClose) : "-"}</dd>
                     </div>
                     {event.start_time && (
-                    <div>
-                      <dt>Event start</dt>
-                      <dd>{formatCloseDate(event.start_time)}</dd>
-                    </div>
-                  )}
-                </dl>
-                </header>
+                      <div>
+                        <dt>Event start</dt>
+                        <dd>{formatCloseDate(event.start_time)}</dd>
+                      </div>
+                    )}
+                  </dl>
 
-                <EventResearch research={event.research} />
+                  <EventResearch research={event.research} eventId={event.event_id} />
 
-                <div className="event-card__markets event-card__markets--grid">
-                  <div className="market-grid">
-                    {event.markets.map((market: Market) => {
-                      const marketExpanded = Boolean(expandedMarkets[market.market_id]);
-                      const description = market.description?.trim() ?? "";
-                      const descriptionLine = primaryLine(description);
-                      const hasMore = description.length > 0 && descriptionLine !== description;
-                      const polymarketMarketUrl = market.slug ? `https://polymarket.com/event/${market.slug}` : null;
+                  <div className="event-card__markets event-card__markets--grid">
+                    <div className="market-grid">
+                      {event.markets.map((market: Market) => {
+                        const marketExpanded = Boolean(expandedMarkets[market.market_id]);
+                        const marketCollapsed = Boolean(collapsedMarkets[market.market_id]);
+                        const bodyId = `market-card-body-${market.market_id}`;
+                        const description = market.description?.trim() ?? "";
+                        const descriptionLine = primaryLine(description);
+                        const hasMore = description.length > 0 && descriptionLine !== description;
+                        const polymarketMarketUrl = market.slug
+                          ? `https://polymarket.com/event/${market.slug}`
+                          : null;
 
-                      return (
-                        <div key={market.market_id} className="market-card">
+                        return (
+                          <div
+                            key={market.market_id}
+                            className={`market-card${marketCollapsed ? " market-card--collapsed" : ""}`}
+                            data-collapsed={marketCollapsed ? "true" : "false"}
+                          >
                           <header className="market-card__header">
-                            <h4 className="market-card__title">
-                              {polymarketMarketUrl ? (
-                                <a href={polymarketMarketUrl} target="_blank" rel="noopener noreferrer">
-                                  {market.question}
-                                </a>
-                              ) : (
-                                market.question
-                              )}
-                            </h4>
+                            <div className="market-card__title-row">
+                              <h4 className="market-card__title">
+                                {polymarketMarketUrl ? (
+                                  <a href={polymarketMarketUrl} target="_blank" rel="noopener noreferrer">
+                                    {market.question}
+                                  </a>
+                                ) : (
+                                  market.question
+                                )}
+                              </h4>
+                              <button
+                                type="button"
+                                className="market-card__toggle"
+                                aria-expanded={!marketCollapsed}
+                                aria-controls={bodyId}
+                                onClick={() =>
+                                  setCollapsedMarkets((prev) => ({
+                                    ...prev,
+                                    [market.market_id]: !marketCollapsed,
+                                  }))
+                                }
+                              >
+                                {marketCollapsed ? "Show details" : "Hide details"}
+                              </button>
+                            </div>
                             <div className="market-card__tags">
                               {market.category && <span className="badge">{market.category}</span>}
                               <span className="market-card__sync">Last sync {formatDate(market.last_synced_at)}</span>
                             </div>
                           </header>
 
-                          <div className="market-card__summary">
-                            {!marketExpanded && descriptionLine && (
-                              <p className="market-card__excerpt">{descriptionLine}</p>
-                            )}
-                            {marketExpanded && description && (
-                              <p className="market-card__details">{description}</p>
-                            )}
-                            {hasMore && (
-                              <button
-                                type="button"
-                                className="market-row__toggle"
-                                data-expanded={marketExpanded ? "true" : "false"}
-                                aria-expanded={marketExpanded}
-                                onClick={() =>
-                                  setExpandedMarkets((prev) => ({
-                                    ...prev,
-                                    [market.market_id]: !marketExpanded,
-                                  }))
-                                }
-                              >
-                                {marketExpanded ? "Show less" : "Show more"}
-                              </button>
-                            )}
+                          <div className="market-card__body" id={bodyId} hidden={marketCollapsed}>
+                            <div className="market-card__summary">
+                              {!marketExpanded && descriptionLine && (
+                                <p className="market-card__excerpt">{descriptionLine}</p>
+                              )}
+                              {marketExpanded && description && (
+                                <p className="market-card__details">{description}</p>
+                              )}
+                              {hasMore && (
+                                <button
+                                  type="button"
+                                  className="market-row__toggle"
+                                  data-expanded={marketExpanded ? "true" : "false"}
+                                  aria-expanded={marketExpanded}
+                                  onClick={() =>
+                                    setExpandedMarkets((prev) => ({
+                                      ...prev,
+                                      [market.market_id]: !marketExpanded,
+                                    }))
+                                  }
+                                >
+                                  {marketExpanded ? "Show less" : "Show more"}
+                                </button>
+                              )}
+                            </div>
+
+                            <dl className="market-card__stats">
+                              <div>
+                                <dt>Close (UTC)</dt>
+                                <dd>{formatCloseDate(market.close_time)}</dd>
+                              </div>
+                              <div>
+                                <dt>Volume</dt>
+                                <dd>{formatCurrency(market.volume_usd)}</dd>
+                              </div>
+                              <div>
+                                <dt>Liquidity</dt>
+                                <dd>{formatCurrency(market.liquidity_usd)}</dd>
+                              </div>
+                            </dl>
+
+                            <ul className="market-card__outcomes">
+                              {market.contracts.map((contract) => (
+                                <li key={contract.contract_id}>
+                                  <span className="market-card__outcome-name">{contract.name}</span>
+                                  <span className="market-card__outcome-value">
+                                    {formatOutcomePrice(contract.current_price)}
+                                    {contract.implied_probability !== null &&
+                                    contract.implied_probability !== undefined ? (
+                                      <>
+                                        {" "}
+                                        <span className="market-card__probability">
+                                          {formatProbability(contract.implied_probability)}
+                                        </span>
+                                      </>
+                                    ) : null}
+                                  </span>
+                                </li>
+                              ))}
+                              {!market.contracts.length && <li className="market-row__outcome-empty">-</li>}
+                            </ul>
+
+                            <MarketForecasts results={market.experiment_results} contracts={market.contracts} />
                           </div>
-
-                          <dl className="market-card__stats">
-                            <div>
-                              <dt>Close (UTC)</dt>
-                              <dd>{formatCloseDate(market.close_time)}</dd>
-                            </div>
-                            <div>
-                              <dt>Volume</dt>
-                              <dd>{formatCurrency(market.volume_usd)}</dd>
-                            </div>
-                            <div>
-                              <dt>Liquidity</dt>
-                              <dd>{formatCurrency(market.liquidity_usd)}</dd>
-                            </div>
-                          </dl>
-
-                          <ul className="market-card__outcomes">
-                            {market.contracts.map((contract) => (
-                              <li key={contract.contract_id}>
-                                <span className="market-card__outcome-name">{contract.name}</span>
-                                <span className="market-card__outcome-value">
-                                  {formatOutcomePrice(contract.current_price)}
-                                  {contract.implied_probability !== null &&
-                                  contract.implied_probability !== undefined ? (
-                                    <>
-                                      {" "}
-                                      <span className="market-card__probability">
-                                        {formatProbability(contract.implied_probability)}
-                                      </span>
-                                    </>
-                                  ) : null}
-                                </span>
-                              </li>
-                            ))}
-                            {!market.contracts.length && <li className="market-row__outcome-empty">-</li>}
-                          </ul>
-
-                          <MarketForecasts results={market.experiment_results} contracts={market.contracts} />
                         </div>
                       );
                     })}
+                    </div>
                   </div>
                 </div>
               </article>
