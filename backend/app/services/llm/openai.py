@@ -7,7 +7,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from openai import OpenAI
+from openai import APITimeoutError, OpenAI
+from loguru import logger
 
 from app.core.config import Settings
 from app.services.openai_client import get_openai_client
@@ -178,7 +179,57 @@ class OpenAIProvider(LLMProvider):
             payload.update(dict(options))
         if tools is not None:
             payload["tools"] = [dict(tool) for tool in tools]
-        return request.client.responses.create(**payload)
+
+        metadata = dict(payload.get("metadata") or {})
+        if request.run_id:
+            metadata.setdefault("pipeline_run_id", request.run_id)
+        metadata.setdefault("experiment", request.experiment_name)
+        metadata.setdefault("strategy", request.strategy_name)
+        metadata.setdefault("stage", request.stage)
+        payload["metadata"] = {k: v for k, v in metadata.items() if v}
+
+        response_id_holder: dict[str, str | None] = {"id": None}
+
+        def _record_response_id(event: Mapping[str, Any] | Any) -> None:
+            response_obj = getattr(event, "response", None)
+            response_id = getattr(response_obj, "id", None)
+            if not isinstance(response_id, str):
+                response_id = getattr(event, "id", None)
+            if isinstance(response_id, str):
+                response_id_holder["id"] = response_id
+
+        stream_kwargs = dict(payload)
+
+        try:
+            with request.client.responses.stream(
+                **stream_kwargs,
+            ) as stream:
+                for event in stream:
+                    _record_response_id(event)
+                final_response = stream.get_final_response()
+                _record_response_id(final_response)
+                return final_response
+        except APITimeoutError as exc:
+            response_id = response_id_holder["id"]
+            if response_id:
+                try:
+                    logger.warning(
+                        "OpenAI stream timed out; retrieving cached response response_id={} experiment={} strategy={} stage={}",
+                        response_id,
+                        request.experiment_name,
+                        request.strategy_name,
+                        request.stage,
+                    )
+                    return request.client.responses.retrieve(response_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to recover OpenAI response after timeout response_id={} experiment={} strategy={} stage={}",
+                        response_id,
+                        request.experiment_name,
+                        request.strategy_name,
+                        request.stage,
+                    )
+            raise exc
 
     def extract_json(self, response: Any) -> Mapping[str, Any]:
         text_candidate: str | None = None
