@@ -5,6 +5,7 @@ from .experiment_repository import (
     ExperimentRepository,
     EventResearchBundle,
     MarketForecastBundle,
+    ForecastResearchDependency,
 )
 from .processing_repository import ProcessingRepository
 from .types import EventGroupRecord
@@ -16,4 +17,5 @@ __all__ = [
     "EventGroupRecord",
     "EventResearchBundle",
     "MarketForecastBundle",
+    "ForecastResearchDependency",
 ]
