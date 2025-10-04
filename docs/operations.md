@@ -58,6 +58,15 @@ the backend, pipeline, and frontend via `pydantic-settings`.
 - Production / CI runs set `ENVIRONMENT=production`, which enforces presence of
   `SUPABASE_DB_URL` and upgrades it to `postgresql+psycopg://` with
   `sslmode=require` for PgBouncer compatibility.
+- `processed_events.event_key` de-duplicates experiments. When a run completes
+  an event it writes the key (either the upstream event id or a deterministic
+  market bundle hash). Subsequent runs query existing keys and skip them, so it
+  is safe to re-run the daily pipeline after partial failures. Event groups are
+  persisted one transaction at a time with the same retry/backoff policy used
+  elsewhere; unique constraint violations during persistence are treated as
+  "already processed" so duplicate runs do not clobber data. Final metadata
+  writes reuse the retry helper, ensuring run status updates land once the
+  transactional event commits have succeeded.
 - The SQLAlchemy engine disables psycopg prepared statements (`prepare_threshold=0`
   and `prepared_statement_cache_size=0`) so Supabase's transaction pooler never
   sees unsupported `PREPARE` calls. Leave these connect args intact when

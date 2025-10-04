@@ -87,6 +87,7 @@ class ProcessingRepository:
         processed_event = ProcessedEvent(
             processed_event_id=payload.processed_event_id,
             run_id=payload.run_id,
+            event_key=payload.event_key,
             event_id=payload.event_id,
             event_slug=payload.event_slug,
             event_title=payload.event_title,
@@ -95,6 +96,17 @@ class ProcessingRepository:
         self._session.add(processed_event)
         self._session.flush()
         return processed_event
+
+    def fetch_completed_event_keys(self, event_keys: set[str]) -> set[str]:
+        if not event_keys:
+            return set()
+
+        query = select(ProcessedEvent.event_key).where(
+            ProcessedEvent.event_key.in_(event_keys),
+            ProcessedEvent.event_key.is_not(None),
+        )
+        rows = self._session.execute(query).scalars().all()
+        return {row for row in rows if row is not None}
 
     def record_processed_market(self, payload: ProcessedMarketInput) -> ProcessedMarket:
         processed_market = ProcessedMarket(

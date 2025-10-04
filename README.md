@@ -72,6 +72,13 @@ publish daily snapshots.
   external URIs.
 - Forecast results store outcome probabilities, reasoning, and provenance links
   back to research artifacts.
+- Processed events now record an immutable `event_key` so the daily pipeline can
+  skip events that already completed a research + forecast cycle. Each event
+  group is persisted inside its own database transaction, and both event writes
+  and run finalisation are wrapped in the same retry/backoff policy, so research
+  and forecast results that finished before an unexpected shutdown remain
+  stored. Reruns safely skip committed events and ignore duplicate writes that
+  race in after the initial lookup.
 - Legacy `markets`/`contracts` tables stay updated via `crud.upsert_market` so
   API consumers can rely on stable endpoints.
 
