@@ -79,7 +79,9 @@ class MarketService:
         self._experiment_repo = ExperimentRepository(session)
 
     def list_markets(self, query: MarketQuery) -> MarketQueryResult:
-        raw_markets, total = self._market_repo.list_markets(**query.to_repository_kwargs())
+        raw_markets, total = self._market_repo.list_markets(
+            **query.to_repository_kwargs()
+        )
         market_ids = [market.market_id for market in raw_markets]
         forecasts_map = self._collect_market_forecasts(market_ids)
         markets = self._normalize_markets(raw_markets, forecast_map=forecasts_map)
@@ -87,11 +89,18 @@ class MarketService:
 
     def list_events(self, query: MarketQuery) -> EventQueryResult:
         groups, total = self._market_repo.list_events(**query.to_repository_kwargs())
-        event_ids = [group.event.event_id for group in groups if group.event and group.event.event_id]
+        event_ids = [
+            group.event.event_id
+            for group in groups
+            if group.event and group.event.event_id
+        ]
         market_ids = [market.market_id for group in groups for market in group.markets]
         research_map = self._collect_event_research(event_ids)
         forecasts_map = self._collect_market_forecasts(market_ids)
-        events = [self._build_event_payload(group, research_map, forecasts_map) for group in groups]
+        events = [
+            self._build_event_payload(group, research_map, forecasts_map)
+            for group in groups
+        ]
         return EventQueryResult(total=total, events=events)
 
     def get_market(self, market_id: str) -> Market | None:
@@ -169,10 +178,13 @@ class MarketService:
         ):
             if not bundle.event_id:
                 continue
+            experiment_name = getattr(bundle.experiment, "name", "unknown")
+            variant_name = bundle.artifact.variant_name or "default"
+            variant_version = bundle.artifact.variant_version or "unspecified"
             variant_key = (
-                bundle.experiment.name,
-                bundle.artifact.variant_name,
-                bundle.artifact.variant_version,
+                experiment_name,
+                variant_name,
+                variant_version,
             )
             bucket = seen.setdefault(bundle.event_id, set())
             if variant_key in bucket:
@@ -272,14 +284,14 @@ class MarketService:
 
     @staticmethod
     def _build_descriptor(
-        experiment: Any,
+        experiment: Any | None,
         variant_name: str | None,
         variant_version: str | None,
         stage: str,
     ) -> ExperimentDescriptor:
         return ExperimentDescriptor(
-            experiment_name=experiment.name,
-            experiment_version=experiment.version,
+            experiment_name=getattr(experiment, "name", "unknown"),
+            experiment_version=getattr(experiment, "version", "unknown"),
             variant_name=variant_name or "default",
             variant_version=variant_version or "unspecified",
             stage=stage,
@@ -287,8 +299,15 @@ class MarketService:
 
     @staticmethod
     def _build_run_summary(
-        run_record: Any, *, identifier_attr: str
+        run_record: Any | None, *, identifier_attr: str
     ) -> ExperimentRunSummary:
+        if run_record is None:
+            return ExperimentRunSummary(
+                run_id="unknown",
+                status="unknown",
+                started_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+            )
         run_identifier = getattr(run_record, identifier_attr, None)
         if run_identifier is None:
             run_identifier = getattr(run_record, "run_id")

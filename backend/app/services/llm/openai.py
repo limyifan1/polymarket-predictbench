@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -19,6 +20,9 @@ _DEFAULT_STAGE_MODELS: dict[str, str] = {
     "research": "gpt-4.1-mini",
     "forecast": "gpt-5",
 }
+
+_BACKGROUND_DEFAULT_POLL_INTERVAL_SECONDS = 30.0
+_BACKGROUND_DEFAULT_MAX_WAIT_SECONDS = 3600.0  # 1 hour
 
 
 def _override_openai_client(settings: Settings, overrides: Mapping[str, Any]) -> OpenAI:
@@ -66,7 +70,9 @@ def _validate_required_fields(
         properties = schema.get("properties")
         if isinstance(properties, Mapping) and properties:
             required = schema.get("required")
-            if isinstance(required, Iterable) and not isinstance(required, (str, bytes)):
+            if isinstance(required, Iterable) and not isinstance(
+                required, (str, bytes)
+            ):
                 required_set = set(required)
             else:
                 required_set = set()
@@ -80,7 +86,9 @@ def _validate_required_fields(
             for key, subschema in properties.items():
                 if isinstance(subschema, Mapping):
                     next_path = f"{parent_path}.{key}" if parent_path else key
-                    _validate_required_fields(schema_name, subschema, parent_path=next_path)
+                    _validate_required_fields(
+                        schema_name, subschema, parent_path=next_path
+                    )
     if _has_type(schema, "array"):
         items = schema.get("items")
         if isinstance(items, Mapping):
@@ -144,6 +152,163 @@ class OpenAIProvider(LLMProvider):
             return ({"type": "web_search"},)
         return None
 
+    @staticmethod
+    def _parse_positive_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if parsed <= 0:
+            return default
+        return parsed
+
+    def _background_config(self, request) -> tuple[float, float]:
+        overrides = getattr(request, "overrides", {}) or {}
+        poll_interval = self._parse_positive_float(
+            overrides.get("background_poll_interval_seconds"),
+            _BACKGROUND_DEFAULT_POLL_INTERVAL_SECONDS,
+        )
+        max_wait = self._parse_positive_float(
+            overrides.get("background_max_wait_seconds"),
+            _BACKGROUND_DEFAULT_MAX_WAIT_SECONDS,
+        )
+        if max_wait < poll_interval:
+            max_wait = max(poll_interval * 3, _BACKGROUND_DEFAULT_MAX_WAIT_SECONDS)
+        return poll_interval, max_wait
+
+    def _invoke_background(
+        self,
+        *,
+        request,
+        payload: Mapping[str, Any],
+        record_response_id,
+        response_id_holder: Mapping[str, str | None],
+    ) -> Any:
+        poll_interval, max_wait = self._background_config(request)
+        create_kwargs = dict(payload)
+        create_kwargs.pop("stream", None)
+
+        try:
+            response = request.client.responses.create(**create_kwargs)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to submit OpenAI background response experiment={} strategy={} stage={}",
+                request.experiment_name,
+                request.strategy_name,
+                request.stage,
+            )
+            raise
+
+        record_response_id(response)
+        response_id = response_id_holder.get("id")
+        status = getattr(response, "status", None)
+        logger.info(
+            "OpenAI background response submitted response_id={} experiment={} strategy={} stage={} status={}",
+            response_id,
+            request.experiment_name,
+            request.strategy_name,
+            request.stage,
+            status,
+        )
+
+        if not isinstance(response_id, str):
+            raise ExperimentExecutionError(
+                "OpenAI background response did not include a response_id"
+            )
+
+        if status == "completed":
+            return response
+
+        start_time = time.monotonic()
+        last_status = status
+
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed >= max_wait:
+                raise ExperimentExecutionError(
+                    f"OpenAI background response {response_id} exceeded {max_wait:.1f}s (last status: {status})"
+                )
+
+            time.sleep(poll_interval)
+
+            try:
+                response = request.client.responses.retrieve(response_id)
+            except APITimeoutError:
+                logger.warning(
+                    "OpenAI background retrieve timed out response_id={} experiment={} strategy={} stage={}",
+                    response_id,
+                    request.experiment_name,
+                    request.strategy_name,
+                    request.stage,
+                )
+                continue
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Failed to retrieve OpenAI background response response_id={} experiment={} strategy={} stage={}",
+                    response_id,
+                    request.experiment_name,
+                    request.strategy_name,
+                    request.stage,
+                )
+                raise
+
+            record_response_id(response)
+            status = getattr(response, "status", None)
+
+            if status != last_status:
+                logger.info(
+                    "OpenAI background response update response_id={} status={} experiment={} strategy={} stage={}",
+                    response_id,
+                    status,
+                    request.experiment_name,
+                    request.strategy_name,
+                    request.stage,
+                )
+                last_status = status
+
+            if status == "completed":
+                return response
+
+            if status in {"failed", "cancelled"}:
+                error_obj = getattr(response, "error", None)
+                detail = None
+                if error_obj is not None:
+                    detail = getattr(error_obj, "message", None) or str(error_obj)
+                raise ExperimentExecutionError(
+                    f"OpenAI background response {response_id} {status}: {detail or 'no error details provided'}"
+                )
+
+            if status == "incomplete":
+                incomplete = getattr(response, "incomplete_details", None)
+                detail = None
+                if incomplete is not None:
+                    detail = getattr(incomplete, "reason", None) or str(incomplete)
+                raise ExperimentExecutionError(
+                    f"OpenAI background response {response_id} incomplete: {detail or 'no details provided'}"
+                )
+
+            if status in {"queued", "in_progress"}:
+                continue
+
+            if status is None:
+                logger.debug(
+                    "OpenAI background response missing status response_id={} experiment={} strategy={} stage={}",
+                    response_id,
+                    request.experiment_name,
+                    request.strategy_name,
+                    request.stage,
+                )
+                continue
+
+            logger.warning(
+                "OpenAI background response response_id={} unexpected status={} experiment={} strategy={} stage={}",
+                response_id,
+                status,
+                request.experiment_name,
+                request.strategy_name,
+                request.stage,
+            )
+
     def json_mode_kwargs(
         self,
         client: Any,
@@ -197,6 +362,15 @@ class OpenAIProvider(LLMProvider):
                 response_id = getattr(event, "id", None)
             if isinstance(response_id, str):
                 response_id_holder["id"] = response_id
+
+        background_mode = bool(payload.get("background"))
+        if background_mode:
+            return self._invoke_background(
+                request=request,
+                payload=payload,
+                record_response_id=_record_response_id,
+                response_id_holder=response_id_holder,
+            )
 
         stream_kwargs = dict(payload)
 
@@ -252,11 +426,15 @@ class OpenAIProvider(LLMProvider):
                 if text_candidate:
                     break
         if not text_candidate:
-            raise ExperimentExecutionError("LLM response did not include a JSON payload")
+            raise ExperimentExecutionError(
+                "LLM response did not include a JSON payload"
+            )
         try:
             return json.loads(text_candidate)
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-            raise ExperimentExecutionError("Failed to decode JSON payload from LLM response") from exc
+            raise ExperimentExecutionError(
+                "Failed to decode JSON payload from LLM response"
+            ) from exc
 
     def usage_dict(self, response: Any) -> Mapping[str, Any] | None:
         usage = getattr(response, "usage", None)

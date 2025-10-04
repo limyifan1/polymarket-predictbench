@@ -60,7 +60,7 @@ class OpenAIDeepResearchNarrative(TextLLMResearchStrategy):
         del context, runtime
         event_context = _format_event_context(group)
         return (
-            "Prepare a superforecaster-style research memo (≈900-1300 words) for the prediction markets below. "
+            "Prepare a superforecaster-style research memo (400-600 words) for the prediction markets below. "
             "Follow the workflow from Tetlock & Gardner's *Superforecasting*: walk step-by-step through "
             "clarification, decomposition, base rates, inside-view adjustments, scenario modelling, synthesis, and "
             "update planning.\n"
@@ -97,6 +97,8 @@ class OpenAIDeepResearchNarrative(TextLLMResearchStrategy):
             # GPT models still benefit from the "high" setting when available.
             "reasoning": {"effort": effort},
         }
+        if "deep-research" in (runtime.model or ""):
+            options["background"] = True
         return options
 
     def postprocess_text_output(

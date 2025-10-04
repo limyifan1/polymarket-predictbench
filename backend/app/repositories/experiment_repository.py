@@ -29,8 +29,8 @@ class EventResearchBundle:
     event_id: str | None
     processed_event_id: str
     artifact: ResearchArtifactRecord
-    research_run: ResearchRunRecord
-    experiment: ExperimentDefinition
+    research_run: ResearchRunRecord | None
+    experiment: ExperimentDefinition | None
     processing_run: ProcessingRun | None
 
 
@@ -94,7 +94,9 @@ class ExperimentRepository:
             )
             .join(
                 ExperimentDefinition,
-                ResearchRunRecord.experiment_id == ExperimentDefinition.experiment_id,
+                (ResearchRunRecord.experiment_id == ExperimentDefinition.experiment_id)
+                & (ResearchRunRecord.research_run_id.is_not(None)),
+                isouter=True,
             )
             .join(
                 ProcessedEvent,
