@@ -24,7 +24,7 @@ from ..llm_support import (
     resolve_llm_request,
 )
 
-DEFAULT_RESEARCH_MODEL = "gpt-4.1-mini"
+DEFAULT_RESEARCH_MODEL = "gpt-5"
 DEFAULT_FORECAST_MODEL = "gpt-5"
 
 
