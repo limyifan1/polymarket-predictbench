@@ -12,12 +12,12 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from collections.abc import Iterable, Mapping, Sequence
 from threading import Lock
-from typing import Any, Callable, ContextManager, FrozenSet
+from typing import Any, Callable, ContextManager, FrozenSet, TypeVar
 from uuid import uuid4
 
 from loguru import logger
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.core.config import Settings, get_settings
 from app.db import init_db
@@ -54,6 +54,8 @@ from .experiments.suites import BaseExperimentSuite
 _DEFAULT_DB_WRITE_ATTEMPTS = 3
 _DEFAULT_DB_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 
+T = TypeVar("T")
+
 
 def _is_retriable_db_error(exc: DBAPIError) -> bool:
     if getattr(exc, "connection_invalidated", False):
@@ -72,6 +74,63 @@ def _is_retriable_db_error(exc: DBAPIError) -> bool:
         "read failed",
     )
     return any(marker in message for marker in retriable_markers)
+
+
+def _is_event_key_unique_violation(exc: IntegrityError) -> bool:
+    orig = getattr(exc, "orig", exc)
+    diag = getattr(orig, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None) if diag else None
+    if constraint_name == "uq_processed_event_key":
+        return True
+
+    pgcode = getattr(orig, "pgcode", None)
+    if pgcode == "23505" and not constraint_name:
+        # Postgres unique violation without the constraint name populated.
+        return True
+
+    message = str(orig).lower()
+    return "processed_events" in message and "event_key" in message
+
+
+def _run_with_db_retries(
+    *,
+    description: str,
+    attempts: int,
+    backoff: Sequence[float],
+    session_factory: Callable[[], ContextManager[Any]],
+    operation: Callable[[Any], T],
+) -> T:
+    last_exception: DBAPIError | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            with session_factory() as session:
+                return operation(session)
+        except DBAPIError as exc:
+            if isinstance(exc, IntegrityError):
+                raise
+
+            last_exception = exc
+            should_retry = _is_retriable_db_error(exc)
+            if not should_retry or attempt == attempts:
+                raise
+
+            backoff_index = min(attempt - 1, len(backoff) - 1)
+            sleep_seconds = backoff[backoff_index] if backoff else 0
+            logger.warning(
+                "Database connection issue while {} (attempt {}/{}); retrying in {}s",
+                description,
+                attempt,
+                attempts,
+                sleep_seconds,
+            )
+            logger.debug("Retryable database error details: {}", exc)
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+
+    if last_exception is not None:
+        raise last_exception
+
+    raise RuntimeError(f"Database operation '{description}' exhausted retries")
 
 
 @dataclass(slots=True)
@@ -248,6 +307,7 @@ class EventProcessingResult:
     suite_research_records: dict[str, dict[str, ResearchExecutionRecord]] | None
     forecast_records: list[ForecastExecutionRecord] | None
     error_message: str | None = None
+    skipped: bool = False
 
 
 def _parse_args() -> argparse.Namespace:
@@ -470,6 +530,235 @@ def _enrich_payload(
     return data
 
 
+def _persist_event_group(
+    *,
+    run_id: str,
+    event_key: str | None,
+    event_payload: NormalizedEvent | None,
+    markets: Sequence[NormalizedMarket],
+    research_records: dict[str, dict[str, ResearchExecutionRecord]] | None,
+    forecast_records: Sequence[ForecastExecutionRecord],
+    session_factory: Callable[[], ContextManager[Any]],
+    processing_repo_factory: Callable[[Any], ProcessingRepository],
+    market_repo_factory: Callable[[Any], MarketRepository],
+    db_retry_attempts: int,
+    db_retry_backoff: Sequence[float],
+) -> bool:
+    prepared_research: dict[
+        str, dict[str, tuple[ResearchExecutionRecord, dict[str, Any] | None, str | None]]
+    ] = {}
+    if research_records:
+        for suite_id, records in research_records.items():
+            suite_payloads: dict[
+                str, tuple[ResearchExecutionRecord, dict[str, Any] | None, str | None]
+            ] = {}
+            for variant_name, record in records.items():
+                payload = _enrich_payload(
+                    record.output.payload,
+                    diagnostics=record.output.diagnostics,
+                )
+                artifact_hash = (
+                    record.output.artifact_hash
+                    or _compute_artifact_hash(payload)
+                )
+                if record.artifact_id is None:
+                    record.artifact_id = str(uuid4())
+                suite_payloads[variant_name] = (record, payload, artifact_hash)
+            prepared_research[suite_id] = suite_payloads
+
+    def _operation(session: Any) -> bool:
+        processing_repo = processing_repo_factory(session)
+        market_repo = market_repo_factory(session)
+
+        processed_event = processing_repo.record_processed_event(
+            ProcessedEventInput(
+                processed_event_id=str(uuid4()),
+                run_id=run_id,
+                event_key=event_key,
+                event_id=event_payload.event_id if event_payload else None,
+                event_slug=event_payload.slug if event_payload else None,
+                event_title=event_payload.title if event_payload else None,
+                raw_snapshot=event_payload.raw_data if event_payload else None,
+            )
+        )
+
+        market_to_processed: dict[str, str] = {}
+
+        for market in markets:
+            processed_market = processing_repo.record_processed_market(
+                ProcessedMarketInput(
+                    processed_market_id=str(uuid4()),
+                    run_id=run_id,
+                    market_id=market.market_id,
+                    market_slug=market.slug,
+                    question=market.question,
+                    close_time=market.close_time,
+                    raw_snapshot=market.raw_data,
+                    processed_event_id=processed_event.processed_event_id,
+                    contracts=_convert_contracts(market),
+                )
+            )
+            market_to_processed[market.market_id] = processed_market.processed_market_id
+            market_repo.upsert_market(market)
+
+        for suite_payloads in prepared_research.values():
+            for record, payload, artifact_hash in suite_payloads.values():
+                artifact_id = record.artifact_id or str(uuid4())
+                record.artifact_id = artifact_id
+                processing_repo.record_research_artifact(
+                    ResearchArtifactInput(
+                        artifact_id=artifact_id,
+                        experiment_run_id=record.meta.run_identifier,
+                        processed_market_id=None,
+                        processed_event_id=processed_event.processed_event_id,
+                        variant_name=record.meta.strategy_name,
+                        variant_version=record.meta.strategy_version,
+                        artifact_hash=artifact_hash,
+                        payload=payload,
+                        artifact_uri=record.output.artifact_uri,
+                    )
+                )
+                processing_repo.record_experiment_result(
+                    ExperimentResultInput(
+                        experiment_run_id=record.meta.run_identifier,
+                        processed_market_id=None,
+                        processed_event_id=processed_event.processed_event_id,
+                        stage=ExperimentStage.RESEARCH.value,
+                        variant_name=record.meta.strategy_name,
+                        variant_version=record.meta.strategy_version,
+                        source_artifact_id=artifact_id,
+                        payload=payload,
+                        score=None,
+                        artifact_uri=record.output.artifact_uri,
+                    )
+                )
+
+        for forecast_record in forecast_records:
+            dependencies: dict[str, str] = {}
+            suite_records = prepared_research.get(
+                forecast_record.meta.suite_id, {}
+            )
+            for dep in forecast_record.dependencies:
+                prepared = suite_records.get(dep)
+                if prepared:
+                    dependency_record = prepared[0]
+                    if dependency_record.artifact_id:
+                        dependencies[dep] = dependency_record.artifact_id
+
+            forecast_record.source_artifact_ids = dependencies if dependencies else None
+
+            primary_artifact_id = None
+            if len(dependencies) == 1:
+                primary_artifact_id = next(iter(dependencies.values()))
+
+            processed_market_id = market_to_processed.get(
+                forecast_record.output.market_id
+            )
+            if not processed_market_id:
+                logger.warning(
+                    "Missing processed market mapping for forecast market {} -- skipping result",
+                    forecast_record.output.market_id,
+                )
+                continue
+
+            payload = _enrich_payload(
+                {
+                    "outcomePrices": forecast_record.output.outcome_prices,
+                    "reasoning": forecast_record.output.reasoning,
+                },
+                diagnostics=forecast_record.output.diagnostics,
+                references=dependencies if dependencies else None,
+            )
+
+            processing_repo.record_experiment_result(
+                ExperimentResultInput(
+                    experiment_run_id=forecast_record.meta.run_identifier,
+                    processed_market_id=processed_market_id,
+                    processed_event_id=processed_event.processed_event_id,
+                    stage=ExperimentStage.FORECAST.value,
+                    variant_name=forecast_record.meta.strategy_name,
+                    variant_version=forecast_record.meta.strategy_version,
+                    source_artifact_id=primary_artifact_id,
+                    payload=payload,
+                    score=forecast_record.output.score,
+                    artifact_uri=forecast_record.output.artifact_uri,
+                )
+            )
+
+        return True
+
+    try:
+        return _run_with_db_retries(
+            description=f"persisting event group {event_key or '<unknown>'}",
+            attempts=db_retry_attempts,
+            backoff=db_retry_backoff,
+            session_factory=session_factory,
+            operation=_operation,
+        )
+    except IntegrityError as exc:
+        if event_key and _is_event_key_unique_violation(exc):
+            logger.info(
+                "Processed event {} already exists; skipping duplicate persistence",
+                event_key,
+            )
+            return False
+        raise
+
+
+def _finalize_processing_metadata(
+    *,
+    processing_run_id: str,
+    run_id: str,
+    summary: PipelineSummary,
+    experiment_metas: Sequence[ExperimentRunMeta],
+    finished_at: datetime,
+    session_factory: Callable[[], ContextManager[Any]],
+    processing_repo_factory: Callable[[Any], ProcessingRepository],
+    db_retry_attempts: int,
+    db_retry_backoff: Sequence[float],
+) -> None:
+    def _operation(session: Any) -> None:
+        processing_repo = processing_repo_factory(session)
+        processing_run = processing_repo.get_processing_run(processing_run_id)
+        if processing_run is not None:
+            processing_repo.finalize_processing_run(
+                processing_run,
+                status="completed"
+                if summary.failed_markets == 0
+                else "completed_with_errors",
+                total_markets=summary.total_markets,
+                processed_markets=summary.processed_markets,
+                failed_markets=summary.failed_markets,
+                finished_at=finished_at,
+            )
+
+        for meta in experiment_metas:
+            processing_repo.record_experiment_run(
+                ExperimentRunInput(
+                    experiment_run_id=meta.run_identifier,
+                    run_id=run_id,
+                    experiment_name=meta.experiment_name,
+                    experiment_version=meta.strategy_version,
+                    stage=meta.stage.value,
+                    status=meta.status,
+                    started_at=meta.started_at,
+                    finished_at=meta.finished_at,
+                    error_message="; ".join(meta.error_messages)
+                    if meta.error_messages
+                    else None,
+                ),
+                description=meta.description,
+            )
+
+    _run_with_db_retries(
+        description="finalizing processing metadata",
+        attempts=db_retry_attempts,
+        backoff=db_retry_backoff,
+        session_factory=session_factory,
+        operation=_operation,
+    )
+
+
 def _parse_variant_filter(raw: str | None) -> set[str]:
     if not raw:
         return set()
@@ -635,6 +924,16 @@ def _serialize_event(event: NormalizedEvent | None) -> dict[str, Any] | None:
         "series_title": event.series_title,
         "raw_data": event.raw_data,
     }
+
+
+def _event_group_key(group: EventMarketGroup) -> str:
+    if group.event and group.event.event_id:
+        return group.event.event_id
+
+    market_ids = sorted({market.market_id for market in group.markets})
+    if not market_ids:
+        return "event:unknown"
+    return "market:" + ",".join(market_ids)
 
 
 def _serialize_market(market: NormalizedMarket) -> dict[str, Any]:
@@ -1046,6 +1345,41 @@ def _execute_forecast_stage(
 
     return forecast_records
 
+
+def _mark_event_group_skipped(
+    *,
+    suites: Sequence[BaseExperimentSuite],
+    experiment_meta_index: Mapping[tuple[str, ExperimentStage, str], ExperimentRunMeta],
+    active_stages: set[ExperimentStage],
+    enabled_research: set[str] | None,
+    enabled_forecast: set[str] | None,
+    reason: str,
+) -> None:
+    if ExperimentStage.RESEARCH in active_stages:
+        for suite in suites:
+            for strategy in suite.research_strategies():
+                if not _variant_selected(
+                    suite.suite_id, strategy.name, enabled_research
+                ):
+                    continue
+                meta = experiment_meta_index[
+                    (suite.suite_id, ExperimentStage.RESEARCH, strategy.name)
+                ]
+                meta.mark_skipped(reason)
+
+    if ExperimentStage.FORECAST in active_stages:
+        for suite in suites:
+            for strategy in suite.forecast_strategies():
+                if not _variant_selected(
+                    suite.suite_id, strategy.name, enabled_forecast
+                ):
+                    continue
+                meta = experiment_meta_index[
+                    (suite.suite_id, ExperimentStage.FORECAST, strategy.name)
+                ]
+                meta.mark_skipped(reason)
+
+
 def _process_event_group(
     request: EventProcessingRequest,
     *,
@@ -1416,42 +1750,66 @@ def run_pipeline(
         if batch_size > 1:
             logger.info("Processing events in batches of {}", batch_size)
 
-        ordered_requests = [
-            EventProcessingRequest(
+        ordered_requests: list[EventProcessingRequest] = []
+        request_event_keys: dict[str, str] = {}
+        for index, key in enumerate(event_order):
+            group = EventMarketGroup(
+                event=grouped_markets[key].event,
+                markets=grouped_markets[key].markets,
+            )
+            request = EventProcessingRequest(
                 order_index=index,
                 key=key,
-                group=EventMarketGroup(
-                    event=grouped_markets[key].event,
-                    markets=grouped_markets[key].markets,
-                ),
+                group=group,
             )
-            for index, key in enumerate(event_order)
-        ]
+            ordered_requests.append(request)
+            request_event_keys[request.key] = _event_group_key(group)
+
+        lookup_keys = {value for value in request_event_keys.values() if value}
+        completed_event_keys: set[str] = set()
+        if lookup_keys:
+            with session_factory() as session:
+                lookup_repo = processing_repo_factory(session)
+                completed_event_keys = lookup_repo.fetch_completed_event_keys(
+                    lookup_keys
+                )
 
         for batch_start in range(0, len(ordered_requests), batch_size):
             batch_requests = ordered_requests[batch_start : batch_start + batch_size]
             if not batch_requests:
                 continue
 
-            if len(batch_requests) == 1:
-                results = [
-                    _process_event_group(
-                        batch_requests[0],
+            skip_results: list[EventProcessingResult] = []
+            active_requests: list[EventProcessingRequest] = []
+            for request in batch_requests:
+                event_key = request_event_keys.get(request.key)
+                if event_key and event_key in completed_event_keys:
+                    skip_reason = f"event already processed ({event_key})"
+                    _mark_event_group_skipped(
                         suites=suites,
-                        research_bundles=research_bundles,
-                        context=pipeline_context,
                         experiment_meta_index=experiment_meta_index,
                         active_stages=active_stages,
                         enabled_research=enabled_research,
                         enabled_forecast=enabled_forecast,
+                        reason=skip_reason,
                     )
-                ]
-            else:
-                with ThreadPoolExecutor(max_workers=len(batch_requests)) as executor:
-                    futures = [
-                        executor.submit(
-                            _process_event_group,
-                            request,
+                    skip_results.append(
+                        EventProcessingResult(
+                            request=request,
+                            suite_research_records=None,
+                            forecast_records=None,
+                            skipped=True,
+                        )
+                    )
+                    continue
+                active_requests.append(request)
+
+            active_results: list[EventProcessingResult] = []
+            if active_requests:
+                if len(active_requests) == 1:
+                    active_results = [
+                        _process_event_group(
+                            active_requests[0],
                             suites=suites,
                             research_bundles=research_bundles,
                             context=pipeline_context,
@@ -1460,9 +1818,26 @@ def run_pipeline(
                             enabled_research=enabled_research,
                             enabled_forecast=enabled_forecast,
                         )
-                        for request in batch_requests
                     ]
-                    results = [future.result() for future in futures]
+                else:
+                    with ThreadPoolExecutor(max_workers=len(active_requests)) as executor:
+                        futures = [
+                            executor.submit(
+                                _process_event_group,
+                                request,
+                                suites=suites,
+                                research_bundles=research_bundles,
+                                context=pipeline_context,
+                                experiment_meta_index=experiment_meta_index,
+                                active_stages=active_stages,
+                                enabled_research=enabled_research,
+                                enabled_forecast=enabled_forecast,
+                            )
+                            for request in active_requests
+                        ]
+                        active_results = [future.result() for future in futures]
+
+            results = active_results + skip_results
 
             results.sort(key=lambda result: result.request.order_index)
 
@@ -1472,6 +1847,14 @@ def run_pipeline(
                 markets = bucket.markets
                 event_payload = bucket.event
                 group = request.group
+
+                event_key = request_event_keys.get(request.key)
+
+                if result.skipped:
+                    logger.info(
+                        "Skipping event {} (already processed)", event_key or request.key
+                    )
+                    continue
 
                 if result.error_message:
                     failure_reason = f"experiment_failed: {result.error_message}"
@@ -1534,150 +1917,28 @@ def run_pipeline(
                         )
                     continue
 
-                summary.processed_markets += len(markets)
-
                 if args.dry_run:
+                    summary.processed_markets += len(markets)
                     continue
 
-                for attempt in range(1, db_retry_attempts + 1):
-                    try:
-                        with session_factory() as session:
-                            processing_repo = processing_repo_factory(session)
-                            market_repo = market_repo_factory(session)
+                persisted = _persist_event_group(
+                    run_id=run_id,
+                    event_key=event_key,
+                    event_payload=event_payload,
+                    markets=markets,
+                    research_records=suite_research_records,
+                    forecast_records=forecast_records,
+                    session_factory=session_factory,
+                    processing_repo_factory=processing_repo_factory,
+                    market_repo_factory=market_repo_factory,
+                    db_retry_attempts=db_retry_attempts,
+                    db_retry_backoff=db_retry_backoff,
+                )
 
-                            processed_event = processing_repo.record_processed_event(
-                                ProcessedEventInput(
-                                    processed_event_id=str(uuid4()),
-                                    run_id=run_id,
-                                    event_id=event_payload.event_id if event_payload else None,
-                                    event_slug=event_payload.slug if event_payload else None,
-                                    event_title=event_payload.title if event_payload else None,
-                                    raw_snapshot=event_payload.raw_data if event_payload else None,
-                                )
-                            )
+                if not persisted:
+                    continue
 
-                            market_to_processed: dict[str, str] = {}
-
-                            for market in markets:
-                                processed_market = processing_repo.record_processed_market(
-                                    ProcessedMarketInput(
-                                        processed_market_id=str(uuid4()),
-                                        run_id=run_id,
-                                        market_id=market.market_id,
-                                        market_slug=market.slug,
-                                        question=market.question,
-                                        close_time=market.close_time,
-                                        raw_snapshot=market.raw_data,
-                                        processed_event_id=processed_event.processed_event_id,
-                                        contracts=_convert_contracts(market),
-                                    )
-                                )
-                                market_to_processed[market.market_id] = (
-                                    processed_market.processed_market_id
-                                )
-
-                                market_repo.upsert_market(market)
-
-                            for suite_id, records in suite_research_records.items():
-                                for variant_name, record in records.items():
-                                    payload = _enrich_payload(
-                                        record.output.payload,
-                                        diagnostics=record.output.diagnostics,
-                                    )
-                                    artifact_hash = (
-                                        record.output.artifact_hash
-                                        or _compute_artifact_hash(payload)
-                                    )
-                                    artifact_id = str(uuid4())
-                                    record.artifact_id = artifact_id
-                                    processing_repo.record_research_artifact(
-                                        ResearchArtifactInput(
-                                            artifact_id=artifact_id,
-                                            experiment_run_id=record.meta.run_identifier,
-                                            processed_market_id=None,
-                                            processed_event_id=processed_event.processed_event_id,
-                                            variant_name=record.meta.strategy_name,
-                                            variant_version=record.meta.strategy_version,
-                                            artifact_hash=artifact_hash,
-                                            payload=payload,
-                                            artifact_uri=record.output.artifact_uri,
-                                        )
-                                    )
-                                    processing_repo.record_experiment_result(
-                                        ExperimentResultInput(
-                                            experiment_run_id=record.meta.run_identifier,
-                                            processed_market_id=None,
-                                            processed_event_id=processed_event.processed_event_id,
-                                            stage=ExperimentStage.RESEARCH.value,
-                                            variant_name=record.meta.strategy_name,
-                                            variant_version=record.meta.strategy_version,
-                                            source_artifact_id=artifact_id,
-                                            payload=payload,
-                                            score=None,
-                                            artifact_uri=record.output.artifact_uri,
-                                        )
-                                    )
-
-                            for forecast_record in forecast_records:
-                                dependencies: dict[str, str] = {}
-                                suite_records = suite_research_records.get(
-                                    forecast_record.meta.suite_id, {}
-                                )
-                                for dep in forecast_record.dependencies:
-                                    artifact = suite_records.get(dep)
-                                    if artifact and artifact.artifact_id:
-                                        dependencies[dep] = artifact.artifact_id
-                                primary_artifact_id = None
-                                if len(dependencies) == 1:
-                                    primary_artifact_id = next(iter(dependencies.values()))
-                                processed_market_id = market_to_processed.get(
-                                    forecast_record.output.market_id
-                                )
-                                if not processed_market_id:
-                                    logger.warning(
-                                        "Missing processed market mapping for forecast market {} -- skipping result",
-                                        forecast_record.output.market_id,
-                                    )
-                                    continue
-                                payload = _enrich_payload(
-                                    {
-                                        "outcomePrices": forecast_record.output.outcome_prices,
-                                        "reasoning": forecast_record.output.reasoning,
-                                    },
-                                    diagnostics=forecast_record.output.diagnostics,
-                                    references=dependencies if dependencies else None,
-                                )
-                                processing_repo.record_experiment_result(
-                                    ExperimentResultInput(
-                                        experiment_run_id=forecast_record.meta.run_identifier,
-                                        processed_market_id=processed_market_id,
-                                        processed_event_id=processed_event.processed_event_id,
-                                        stage=ExperimentStage.FORECAST.value,
-                                        variant_name=forecast_record.meta.strategy_name,
-                                        variant_version=forecast_record.meta.strategy_version,
-                                        source_artifact_id=primary_artifact_id,
-                                        payload=payload,
-                                        score=forecast_record.output.score,
-                                        artifact_uri=forecast_record.output.artifact_uri,
-                                    )
-                                )
-
-                        break
-                    except DBAPIError as exc:
-                        if not _is_retriable_db_error(exc) or attempt == db_retry_attempts:
-                            raise
-
-                        backoff_index = min(attempt - 1, len(db_retry_backoff) - 1)
-                        sleep_seconds = db_retry_backoff[backoff_index]
-                        logger.warning(
-                            "Database connection issue while persisting event group {} (attempt {}/{}); retrying in {}s",
-                            request.key,
-                            attempt,
-                            db_retry_attempts,
-                            sleep_seconds,
-                        )
-                        logger.debug("Retryable database error details: {}", exc)
-                        time.sleep(sleep_seconds)
+                summary.processed_markets += len(markets)
 
     finally:
         if hasattr(client, "close"):
@@ -1692,37 +1953,17 @@ def run_pipeline(
             if status == "running":
                 status = "completed"
             meta.status = status
-        with session_factory() as session:
-            processing_repo = processing_repo_factory(session)
-            processing_run = processing_repo.get_processing_run(processing_run_id)
-            if processing_run is not None:
-                processing_repo.finalize_processing_run(
-                    processing_run,
-                    status="completed"
-                    if summary.failed_markets == 0
-                    else "completed_with_errors",
-                    total_markets=summary.total_markets,
-                    processed_markets=summary.processed_markets,
-                    failed_markets=summary.failed_markets,
-                    finished_at=finished_at,
-                )
-            for meta in experiment_metas:
-                processing_repo.record_experiment_run(
-                    ExperimentRunInput(
-                        experiment_run_id=meta.run_identifier,
-                        run_id=run_id,
-                        experiment_name=meta.experiment_name,
-                        experiment_version=meta.strategy_version,
-                        stage=meta.stage.value,
-                        status=meta.status,
-                        started_at=meta.started_at,
-                        finished_at=meta.finished_at,
-                        error_message="; ".join(meta.error_messages)
-                        if meta.error_messages
-                        else None,
-                    ),
-                    description=meta.description,
-                )
+        _finalize_processing_metadata(
+            processing_run_id=processing_run_id,
+            run_id=run_id,
+            summary=summary,
+            experiment_metas=experiment_metas,
+            finished_at=finished_at,
+            session_factory=session_factory,
+            processing_repo_factory=processing_repo_factory,
+            db_retry_attempts=db_retry_attempts,
+            db_retry_backoff=db_retry_backoff,
+        )
 
     for meta in experiment_metas:
         summary.record_experiment_meta(meta)

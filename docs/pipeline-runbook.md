@@ -17,9 +17,13 @@ troubleshooting companion when runs fail.
    `closed=false` and the configured window.
 4. Group markets by event (`EventMarketGroup`).
 5. Execute research strategies, persist artifacts, and fan out to forecast
-   strategies once their dependencies succeed.
+   strategies once their dependencies succeed. Each experiment result is written
+   to the database immediately after the corresponding LLM completes (still
+   wrapped in the per-event transaction) so successful work survives pipeline
+   crashes.
 6. Write processed payloads, experiment runs, research artifacts, forecast
-   results, and processing failures via repository helpers.
+   results, and processing failures via repository helpers. Completed events are
+   tagged with a deterministic `event_key`, allowing future runs to skip them.
 7. Emit a structured `PipelineSummary` (printed to stdout and optionally saved
    as JSON via `--summary-path`).
 
@@ -111,6 +115,8 @@ This is useful for managing complex or frequently used overrides.
   counts, Git SHA, environment).
 - `processed_events` / `processed_markets` / `processed_contracts` – normalized
   Polymarket payloads for every processed event.
+- `processed_events.event_key` – deterministic identifier (`event_id` or
+  `market:<ids>`) used to de-duplicate runs.
 - `research_artifacts` – JSON payloads + provenance for each research variant.
 - `experiment_results` – forecast probabilities and research payloads tagged by
   suite/stage/variant.
@@ -130,6 +136,18 @@ printed summary.
 - **Missing forecasts** – if all forecasts skip or fail, the run logs a
   `no_forecast_results` failure so downstream analysis can filter affected
   markets.
+- **Previously processed events** – the run logs a skip message and continues
+  without reissuing LLM calls when the `event_key` already exists. This makes
+  reruns idempotent even after partial failures.
+- **Duplicate commits during persistence** – if another run finishes between the
+  lookup and the insert, the unique constraint on `processed_events.event_key`
+  triggers and the event is treated as already processed. The retry helper does
+  not re-run LLM work in that scenario.
+- **Mid-run crashes** – every event group is committed in its own transaction,
+  so research artifacts and forecasts that completed before the crash remain in
+  the database and will be treated as already processed on the next run. Final
+  run metadata uses the same retry/backoff wrapper, so status updates land once
+  the per-event transactions finish.
 
 `PipelineSummary.failures` captures a list of `{market_id, reason}` entries. The
 JSON artifact mirrors the printed summary for automation and alerting.
@@ -171,3 +189,8 @@ JSON artifact mirrors the printed summary for automation and alerting.
 - The workflow sets `ENVIRONMENT=production`, installs dependencies from
   `backend/requirements.txt`, runs the CLI, and uploads
   `artifacts/pipeline-summary.json` when present.
+- Completed events are skipped on subsequent runs. The pipeline derives an
+  `event_key` (the upstream event id, or `market:<sorted-market-ids>` when no
+  event exists) and persists it alongside the event snapshot. When a new run
+  streams markets it first queries the database for existing keys and marks the
+  matching event group as skipped.

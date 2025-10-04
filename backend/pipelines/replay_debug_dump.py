@@ -237,6 +237,7 @@ def _persist_event_bundle(
             ProcessedEventInput(
                 processed_event_id=processed_event_id,
                 run_id=run_id,
+                event_key=event.event_key,
                 event_id=normalized_event.event_id if normalized_event else None,
                 event_slug=normalized_event.slug if normalized_event else None,
                 event_title=normalized_event.title if normalized_event else None,
