@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, Iterable
+from unittest.mock import patch
 
 from pipelines.daily_run import run_pipeline
 from pipelines.experiments.base import ForecastOutput, ResearchOutput
@@ -91,6 +92,9 @@ class DummyProcessingRepository:
     def finalize_processing_run(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
+    def fetch_completed_event_keys(self, keys: set[str]) -> set[str]:
+        return set()
+
 
 class DummyMarketRepository:
     def __init__(self, session: object) -> None:
@@ -114,16 +118,17 @@ def test_daily_pipeline_dry_run_processes_markets(
 ):
     stub_markets = [sample_market_payload]
 
-    summary = run_pipeline(
-        pipeline_args,
-        test_settings,
-        suites=[DummySuite()],
-        client_factory=lambda: StubClient(stub_markets),
-        session_factory=dummy_session_scope,
-        init_db_fn=lambda: None,
-        processing_repo_factory=DummyProcessingRepository,
-        market_repo_factory=DummyMarketRepository,
-    )
+    with patch("pipelines.daily_run._verify_database_read_write"):
+        summary = run_pipeline(
+            pipeline_args,
+            test_settings,
+            suites=[DummySuite()],
+            client_factory=lambda: StubClient(stub_markets),
+            session_factory=dummy_session_scope,
+            init_db_fn=lambda: None,
+            processing_repo_factory=DummyProcessingRepository,
+            market_repo_factory=DummyMarketRepository,
+        )
 
     assert summary.total_markets == 1
     assert summary.processed_markets == 1
