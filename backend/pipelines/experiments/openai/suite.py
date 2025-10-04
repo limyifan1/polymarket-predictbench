@@ -23,11 +23,11 @@ def build_openai_suite() -> BaseExperimentSuite:
     forecast_variants = (
         strategy(
             GPT5ForecastStrategy,
-            requires=("openai_web_search",),
-            alias="gpt41_forecast",
-            version="0.2-gpt4.1",
-            description="JSON-mode forecast prompt using GPT-4.1 preview",
-            overrides={"model": "gpt-4.1"},
+            requires=("openai_deep_research_narrative",),
+            alias="gpt5_forecast",
+            version="0.2-gpt5",
+            description="JSON-mode forecast prompt using GPT-5 preview",
+            overrides={"model": "gpt-5"},
         ),
     )
 
