@@ -60,7 +60,6 @@ class ExperimentResultInput:
     stage: str
     variant_name: str | None
     variant_version: str | None
-    source_artifact_id: str | None
     payload: dict | None
     score: float | None
     artifact_uri: str | None
@@ -69,7 +68,7 @@ class ExperimentResultInput:
 @dataclass(slots=True)
 class ResearchArtifactInput:
     artifact_id: str
-    experiment_run_id: str
+    research_run_id: str
     processed_market_id: str | None
     processed_event_id: str | None
     variant_name: str
@@ -79,6 +78,28 @@ class ResearchArtifactInput:
     artifact_uri: str | None
 
 
+@dataclass(slots=True)
+class ResearchRunInput:
+    research_run_id: str
+    run_id: str
+    suite_id: str
+    experiment_name: str
+    strategy_name: str
+    strategy_version: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+    description: str | None
+
+
+@dataclass(slots=True)
+class ForecastResearchLinkInput:
+    experiment_result_id: int
+    artifact_id: str
+    dependency_key: str | None
+
+
 __all__ = [
     "ProcessedContractInput",
     "ProcessedEventInput",
@@ -86,4 +107,6 @@ __all__ = [
     "ExperimentRunInput",
     "ExperimentResultInput",
     "ResearchArtifactInput",
+    "ResearchRunInput",
+    "ForecastResearchLinkInput",
 ]

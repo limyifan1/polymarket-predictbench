@@ -19,6 +19,7 @@ from app.models import (
     ProcessedMarket,
     ProcessingRun,
     ResearchArtifactRecord,
+    ResearchRunRecord,
 )
 from app.schemas import (
     DatasetOverview,
@@ -45,11 +46,6 @@ class OverviewService:
 
         total_research_artifacts = self._scalar(
             select(func.count(ResearchArtifactRecord.artifact_id))
-            .join(
-                ExperimentRunRecord,
-                ResearchArtifactRecord.experiment_run_id == ExperimentRunRecord.experiment_run_id,
-            )
-            .where(ExperimentRunRecord.stage == ExperimentStage.RESEARCH.value)
         )
 
         total_forecast_results = self._scalar(
@@ -97,13 +93,10 @@ class OverviewService:
                 ResearchArtifactRecord.processed_event_id == ProcessedEvent.processed_event_id,
             )
             .join(
-                ExperimentRunRecord,
-                ResearchArtifactRecord.experiment_run_id == ExperimentRunRecord.experiment_run_id,
+                ResearchRunRecord,
+                ResearchArtifactRecord.research_run_id == ResearchRunRecord.research_run_id,
             )
-            .where(
-                ExperimentRunRecord.stage == ExperimentStage.RESEARCH.value,
-                ProcessedEvent.event_id.is_not(None),
-            )
+            .where(ProcessedEvent.event_id.is_not(None))
         ).scalars()
         event_ids.update(filter(None, direct_rows))
 
@@ -115,17 +108,14 @@ class OverviewService:
                 ResearchArtifactRecord.processed_market_id == ProcessedMarket.processed_market_id,
             )
             .join(
-                ExperimentRunRecord,
-                ResearchArtifactRecord.experiment_run_id == ExperimentRunRecord.experiment_run_id,
+                ResearchRunRecord,
+                ResearchArtifactRecord.research_run_id == ResearchRunRecord.research_run_id,
             )
             .join(
                 ProcessedEvent,
                 ProcessedMarket.processed_event_id == ProcessedEvent.processed_event_id,
             )
-            .where(
-                ExperimentRunRecord.stage == ExperimentStage.RESEARCH.value,
-                ProcessedEvent.event_id.is_not(None),
-            )
+            .where(ProcessedEvent.event_id.is_not(None))
         ).scalars()
         event_ids.update(filter(None, via_market_rows))
 
@@ -192,14 +182,13 @@ class OverviewService:
                 func.max(ResearchArtifactRecord.created_at),
             )
             .join(
-                ExperimentRunRecord,
-                ResearchArtifactRecord.experiment_run_id == ExperimentRunRecord.experiment_run_id,
+                ResearchRunRecord,
+                ResearchArtifactRecord.research_run_id == ResearchRunRecord.research_run_id,
             )
             .join(
                 ExperimentDefinition,
-                ExperimentRunRecord.experiment_id == ExperimentDefinition.experiment_id,
+                ResearchRunRecord.experiment_id == ExperimentDefinition.experiment_id,
             )
-            .where(ExperimentRunRecord.stage == ExperimentStage.RESEARCH.value)
             .group_by(
                 ExperimentDefinition.name,
                 ExperimentDefinition.version,

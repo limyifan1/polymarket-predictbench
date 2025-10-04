@@ -45,6 +45,13 @@ export type ResearchArtifact = {
   payload: Record<string, unknown> | null;
 };
 
+export type ForecastResearchReference = {
+  dependency_key: string | null;
+  artifact_id: string;
+  descriptor: ExperimentDescriptor;
+  run: ExperimentRunSummary;
+};
+
 export type ForecastResult = {
   descriptor: ExperimentDescriptor;
   run: ExperimentRunSummary;
@@ -52,8 +59,8 @@ export type ForecastResult = {
   recorded_at: string;
   score: number | null;
   artifact_uri: string | null;
-  source_artifact_id: string | null;
   payload: Record<string, unknown> | null;
+  research_dependencies: ForecastResearchReference[];
 };
 
 export type Event = {

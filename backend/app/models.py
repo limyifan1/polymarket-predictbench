@@ -126,6 +126,9 @@ class ProcessingRun(Base):
     events: Mapped[list["ProcessedEvent"]] = relationship(
         "ProcessedEvent", back_populates="run", cascade="all, delete-orphan"
     )
+    research_runs: Mapped[list["ResearchRunRecord"]] = relationship(
+        "ResearchRunRecord", back_populates="processing_run", cascade="all, delete-orphan"
+    )
 
 
 class ProcessedEvent(Base):
@@ -256,12 +259,46 @@ class ExperimentRunRecord(Base):
     results: Mapped[list["ExperimentResultRecord"]] = relationship(
         "ExperimentResultRecord", back_populates="experiment_run", cascade="all, delete-orphan"
     )
-    research_artifacts: Mapped[list["ResearchArtifactRecord"]] = relationship(
-        "ResearchArtifactRecord", back_populates="experiment_run", cascade="all, delete-orphan"
+    __table_args__ = (
+        UniqueConstraint("run_id", "experiment_id", name="uq_experiment_run_scope"),
+    )
+
+
+class ResearchRunRecord(Base):
+    __tablename__ = "research_runs"
+
+    research_run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("processing_runs.run_id"), nullable=False
+    )
+    suite_id: Mapped[str] = mapped_column(String, nullable=False)
+    experiment_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("experiments.experiment_id"), nullable=False
+    )
+    strategy_name: Mapped[str] = mapped_column(String, nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    processing_run: Mapped[ProcessingRun] = relationship(
+        "ProcessingRun", back_populates="research_runs"
+    )
+    experiment: Mapped[ExperimentDefinition] = relationship("ExperimentDefinition")
+    artifacts: Mapped[list["ResearchArtifactRecord"]] = relationship(
+        "ResearchArtifactRecord", back_populates="research_run", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
-        UniqueConstraint("run_id", "experiment_id", name="uq_experiment_run_scope"),
+        UniqueConstraint(
+            "run_id", "suite_id", "strategy_name", "strategy_version", name="uq_research_run_scope"
+        ),
     )
 
 
@@ -269,8 +306,8 @@ class ResearchArtifactRecord(Base):
     __tablename__ = "research_artifacts"
 
     artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
-    experiment_run_id: Mapped[str] = mapped_column(
-        String, ForeignKey("experiment_runs.experiment_run_id"), nullable=False
+    research_run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("research_runs.research_run_id"), nullable=False
     )
     processed_market_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("processed_markets.processed_market_id"), nullable=True
@@ -290,8 +327,8 @@ class ResearchArtifactRecord(Base):
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
 
-    experiment_run: Mapped["ExperimentRunRecord"] = relationship(
-        "ExperimentRunRecord", back_populates="research_artifacts"
+    research_run: Mapped[ResearchRunRecord] = relationship(
+        "ResearchRunRecord", back_populates="artifacts"
     )
     processed_market: Mapped[ProcessedMarket | None] = relationship(
         "ProcessedMarket", back_populates="research_artifacts"
@@ -299,13 +336,15 @@ class ResearchArtifactRecord(Base):
     processed_event: Mapped[ProcessedEvent | None] = relationship(
         "ProcessedEvent", back_populates="research_artifacts"
     )
-    forecast_results: Mapped[list["ExperimentResultRecord"]] = relationship(
-        "ExperimentResultRecord", back_populates="source_artifact"
+    forecast_links: Mapped[list["ForecastResearchLink"]] = relationship(
+        "ForecastResearchLink", back_populates="artifact", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
         UniqueConstraint(
-            "experiment_run_id", "processed_market_id", "artifact_hash",
+            "research_run_id",
+            "processed_market_id",
+            "artifact_hash",
             name="uq_research_artifact_hash"
         ),
     )
@@ -331,9 +370,6 @@ class ExperimentResultRecord(Base):
     )
     variant_name: Mapped[str | None] = mapped_column(String, nullable=True)
     variant_version: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_artifact_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("research_artifacts.artifact_id"), nullable=True
-    )
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     score: Mapped[float | None] = mapped_column(Numeric(18, 6), nullable=True)
     artifact_uri: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -348,8 +384,8 @@ class ExperimentResultRecord(Base):
     processed_event: Mapped[ProcessedEvent | None] = relationship(
         "ProcessedEvent", back_populates="experiment_results"
     )
-    source_artifact: Mapped[ResearchArtifactRecord | None] = relationship(
-        "ResearchArtifactRecord", back_populates="forecast_results"
+    research_links: Mapped[list["ForecastResearchLink"]] = relationship(
+        "ForecastResearchLink", back_populates="experiment_result", cascade="all, delete-orphan"
     )
 
     __table_args__ = (
@@ -358,6 +394,38 @@ class ExperimentResultRecord(Base):
             "processed_event_id",
             "processed_market_id",
             name="uq_experiment_result_scope",
+        ),
+    )
+
+
+class ForecastResearchLink(Base):
+    __tablename__ = "forecast_research_links"
+
+    link_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    experiment_result_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("experiment_results.experiment_result_id"), nullable=False
+    )
+    artifact_id: Mapped[str] = mapped_column(
+        String, ForeignKey("research_artifacts.artifact_id"), nullable=False
+    )
+    dependency_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+    experiment_result: Mapped[ExperimentResultRecord] = relationship(
+        "ExperimentResultRecord", back_populates="research_links"
+    )
+    artifact: Mapped[ResearchArtifactRecord] = relationship(
+        "ResearchArtifactRecord", back_populates="forecast_links"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_result_id",
+            "artifact_id",
+            "dependency_key",
+            name="uq_forecast_research_dependency",
         ),
     )
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,21 +12,25 @@ from app.models import (
     ExperimentDefinition,
     ExperimentResultRecord,
     ExperimentRunRecord,
+    ForecastResearchLink,
     ProcessedContract,
     ProcessedEvent,
     ProcessedMarket,
     ProcessingFailure,
     ProcessingRun,
     ResearchArtifactRecord,
+    ResearchRunRecord,
 )
 
 from .pipeline_models import (
     ExperimentResultInput,
     ExperimentRunInput,
+    ForecastResearchLinkInput,
     ProcessedContractInput,
     ProcessedEventInput,
     ProcessedMarketInput,
     ResearchArtifactInput,
+    ResearchRunInput,
 )
 
 
@@ -213,9 +217,49 @@ class ProcessingRepository:
         self._session.flush()
         return experiment_run
 
+    def record_research_run(
+        self,
+        payload: ResearchRunInput,
+    ) -> ResearchRunRecord:
+        definition = self.ensure_experiment_definition(
+            name=payload.experiment_name,
+            version=payload.strategy_version,
+            description=payload.description,
+        )
+        existing = self._session.get(ResearchRunRecord, payload.research_run_id)
+        if existing:
+            existing.status = payload.status
+            existing.started_at = payload.started_at
+            existing.finished_at = payload.finished_at
+            existing.error_message = payload.error_message
+            existing.description = payload.description
+            existing.suite_id = payload.suite_id
+            existing.strategy_name = payload.strategy_name
+            existing.strategy_version = payload.strategy_version
+            existing.experiment = definition
+            return existing
+
+        research_run = ResearchRunRecord(
+            research_run_id=payload.research_run_id,
+            run_id=payload.run_id,
+            suite_id=payload.suite_id,
+            experiment=definition,
+            strategy_name=payload.strategy_name,
+            strategy_version=payload.strategy_version,
+            status=payload.status,
+            started_at=payload.started_at,
+            finished_at=payload.finished_at,
+            error_message=payload.error_message,
+            description=payload.description,
+        )
+        self._session.add(research_run)
+        self._session.flush()
+        return research_run
+
     def record_research_artifact(self, payload: ResearchArtifactInput) -> ResearchArtifactRecord:
         existing = self._session.get(ResearchArtifactRecord, payload.artifact_id)
         if existing:
+            existing.research_run_id = payload.research_run_id
             existing.processed_market_id = payload.processed_market_id
             existing.processed_event_id = payload.processed_event_id
             existing.variant_name = payload.variant_name
@@ -227,7 +271,7 @@ class ProcessingRepository:
 
         artifact = ResearchArtifactRecord(
             artifact_id=payload.artifact_id,
-            experiment_run_id=payload.experiment_run_id,
+            research_run_id=payload.research_run_id,
             processed_market_id=payload.processed_market_id,
             processed_event_id=payload.processed_event_id,
             variant_name=payload.variant_name,
@@ -248,7 +292,6 @@ class ProcessingRepository:
             stage=payload.stage,
             variant_name=payload.variant_name,
             variant_version=payload.variant_version,
-            source_artifact_id=payload.source_artifact_id,
             payload=payload.payload,
             score=payload.score,
             artifact_uri=payload.artifact_uri,
@@ -256,6 +299,35 @@ class ProcessingRepository:
         self._session.add(result)
         self._session.flush()
         return result
+
+    def record_forecast_research_links(
+        self, payloads: Sequence[ForecastResearchLinkInput]
+    ) -> None:
+        for payload in payloads:
+            link = ForecastResearchLink(
+                experiment_result_id=payload.experiment_result_id,
+                artifact_id=payload.artifact_id,
+                dependency_key=payload.dependency_key,
+            )
+            self._session.add(link)
+        if payloads:
+            self._session.flush()
+
+    def load_event_research_artifacts(
+        self, event_id: str
+    ) -> list[tuple[ResearchArtifactRecord, ResearchRunRecord]]:
+        query = (
+            select(ResearchArtifactRecord, ResearchRunRecord)
+            .join(ResearchRunRecord, ResearchArtifactRecord.research_run_id == ResearchRunRecord.research_run_id)
+            .join(
+                ProcessedEvent,
+                ResearchArtifactRecord.processed_event_id == ProcessedEvent.processed_event_id,
+            )
+            .where(ProcessedEvent.event_id == event_id)
+            .order_by(ResearchArtifactRecord.created_at.desc())
+        )
+        rows = self._session.execute(query).all()
+        return [(artifact, research_run) for artifact, research_run in rows]
 
 
 __all__ = ["ProcessingRepository"]
