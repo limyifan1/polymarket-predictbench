@@ -96,7 +96,7 @@ This is useful for managing complex or frequently used overrides.
       }
     },
     "gemini:forecast:gemini_simple": {
-      "model": "gemini-1.5-flash"
+      "model": "gemini-2.5-flash"
     }
   }
   ```

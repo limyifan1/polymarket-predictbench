@@ -102,7 +102,7 @@ def test_gemini_default_tools_include_search_tool() -> None:
 def test_gemini_search_tool_remaps_to_legacy_for_1_x_models() -> None:
     provider = GeminiProvider()
     remapped = provider._remap_search_tools_for_model(  # type: ignore[attr-defined]
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         tools=[{"google_search": {}}],
     )
     assert remapped == [{"google_search_retrieval": {}}]
@@ -114,5 +114,7 @@ def test_gemini_search_tool_remaps_legacy_payload_for_2_x_models() -> None:
         model="gemini-2.5-pro",
         tools=[{"google_search_retrieval": {}}],
     )
-    expected_key = "google_search" if _SUPPORTS_GOOGLE_SEARCH_TOOL else "google_search_retrieval"
+    expected_key = (
+        "google_search" if _SUPPORTS_GOOGLE_SEARCH_TOOL else "google_search_retrieval"
+    )
     assert remapped == [{expected_key: {}}]

@@ -1142,22 +1142,36 @@ def _verify_database_read_write(
     try:
         with session_factory() as session:
             session.execute(text("SELECT 1"))
-            session.execute(
-                text(
+            bind = session.get_bind()
+            dialect_name = bind.dialect.name if bind is not None else ""
+
+            if dialect_name == "sqlite":
+                create_sql = text(f"CREATE TEMP TABLE {temp_table} (value TEXT)")
+                drop_sql = text(f"DROP TABLE IF EXISTS {temp_table}")
+            else:
+                create_sql = text(
                     f"CREATE TEMP TABLE {temp_table} (value TEXT) ON COMMIT DROP"
                 )
-            )
-            session.execute(
-                text(f"INSERT INTO {temp_table} (value) VALUES (:value)"),
-                {"value": "ok"},
-            )
-            result = session.execute(
-                text(f"SELECT value FROM {temp_table} WHERE value = :value"),
-                {"value": "ok"},
-            )
-            row = result.first()
-            if row is None or row[0] != "ok":
-                raise RuntimeError("Verification value missing from temporary table")
+                drop_sql = None
+
+            session.execute(create_sql)
+            try:
+                session.execute(
+                    text(f"INSERT INTO {temp_table} (value) VALUES (:value)"),
+                    {"value": "ok"},
+                )
+                result = session.execute(
+                    text(f"SELECT value FROM {temp_table} WHERE value = :value"),
+                    {"value": "ok"},
+                )
+                row = result.first()
+                if row is None or row[0] != "ok":
+                    raise RuntimeError(
+                        "Verification value missing from temporary table"
+                    )
+            finally:
+                if drop_sql is not None:
+                    session.execute(drop_sql)
     except Exception:
         logger.exception("Database read/write verification failed")
         raise

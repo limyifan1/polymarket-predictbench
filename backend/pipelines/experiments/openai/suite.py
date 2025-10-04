@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..suites import BaseExperimentSuite, strategy, suite
 from .forecast_gpt5 import GPT5ForecastStrategy
 from .research_atlas import AtlasResearchSweep
+from .research_deep_research import OpenAIDeepResearchNarrative
 from .research_timeline import HorizonSignalTimeline
 from .research_web_search import OpenAIWebSearchResearch
 
@@ -13,6 +14,7 @@ def build_openai_suite() -> BaseExperimentSuite:
     """Return the configured OpenAI experiment suite."""
 
     research_strategies = (
+        strategy(OpenAIDeepResearchNarrative),
         strategy(OpenAIWebSearchResearch),
         strategy(AtlasResearchSweep),
         strategy(HorizonSignalTimeline),
