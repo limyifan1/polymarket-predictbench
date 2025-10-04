@@ -97,9 +97,6 @@ class OpenAIDeepResearchNarrative(TextLLMResearchStrategy):
             # GPT models still benefit from the "high" setting when available.
             "reasoning": {"effort": effort},
         }
-        if "deep-research" not in runtime.model:
-            # Standard GPT models accept temperature but Deep Research endpoints reject it.
-            options["temperature"] = 0.35
         return options
 
     def postprocess_text_output(
