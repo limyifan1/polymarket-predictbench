@@ -13,10 +13,12 @@ from app.models import (
     ExperimentResultRecord,
     ExperimentRunRecord,
     ExperimentStage,
+    ForecastResearchLink,
     ProcessedEvent,
     ProcessedMarket,
     ProcessingRun,
     ResearchArtifactRecord,
+    ResearchRunRecord,
 )
 
 
@@ -27,7 +29,7 @@ class EventResearchBundle:
     event_id: str | None
     processed_event_id: str
     artifact: ResearchArtifactRecord
-    experiment_run: ExperimentRunRecord
+    research_run: ResearchRunRecord
     experiment: ExperimentDefinition
     processing_run: ProcessingRun | None
 
@@ -42,6 +44,15 @@ class MarketForecastBundle:
     experiment_run: ExperimentRunRecord
     experiment: ExperimentDefinition
     processing_run: ProcessingRun | None
+    dependencies: list["ForecastResearchDependency"]
+
+
+@dataclass(slots=True)
+class ForecastResearchDependency:
+    link: ForecastResearchLink
+    artifact: ResearchArtifactRecord
+    research_run: ResearchRunRecord
+    experiment: ExperimentDefinition
 
 
 class ExperimentRepository:
@@ -59,7 +70,7 @@ class ExperimentRepository:
 
         query: Select[tuple[
             ResearchArtifactRecord,
-            ExperimentRunRecord,
+            ResearchRunRecord,
             ExperimentDefinition,
             ProcessedEvent,
             ProcessingRun |
@@ -67,19 +78,19 @@ class ExperimentRepository:
         ]] = (
             select(
                 ResearchArtifactRecord,
-                ExperimentRunRecord,
+                ResearchRunRecord,
                 ExperimentDefinition,
                 ProcessedEvent,
                 ProcessingRun,
             )
             .join(
-                ExperimentRunRecord,
-                ResearchArtifactRecord.experiment_run_id
-                == ExperimentRunRecord.experiment_run_id,
+                ResearchRunRecord,
+                ResearchArtifactRecord.research_run_id
+                == ResearchRunRecord.research_run_id,
             )
             .join(
                 ExperimentDefinition,
-                ExperimentRunRecord.experiment_id == ExperimentDefinition.experiment_id,
+                ResearchRunRecord.experiment_id == ExperimentDefinition.experiment_id,
             )
             .join(
                 ProcessedEvent,
@@ -93,7 +104,6 @@ class ExperimentRepository:
             )
             .where(
                 ResearchArtifactRecord.processed_event_id.is_not(None),
-                ExperimentRunRecord.stage == ExperimentStage.RESEARCH.value,
                 ProcessedEvent.event_id.in_(set(event_ids)),
             )
             .order_by(ResearchArtifactRecord.created_at.desc())
@@ -102,13 +112,13 @@ class ExperimentRepository:
         rows = self._session.execute(query).all()
 
         bundles: list[EventResearchBundle] = []
-        for artifact, experiment_run, experiment, processed_event, processing_run in rows:
+        for artifact, research_run, experiment, processed_event, processing_run in rows:
             bundles.append(
                 EventResearchBundle(
                     event_id=processed_event.event_id,
                     processed_event_id=processed_event.processed_event_id,
                     artifact=artifact,
-                    experiment_run=experiment_run,
+                    research_run=research_run,
                     experiment=experiment,
                     processing_run=processing_run,
                 )
@@ -166,6 +176,49 @@ class ExperimentRepository:
 
         rows = self._session.execute(query).all()
 
+        if not rows:
+            return []
+
+        result_ids = [row[0].experiment_result_id for row in rows]
+        dependency_query: Select[tuple[
+            ForecastResearchLink,
+            ResearchArtifactRecord,
+            ResearchRunRecord,
+            ExperimentDefinition,
+        ]] = (
+            select(
+                ForecastResearchLink,
+                ResearchArtifactRecord,
+                ResearchRunRecord,
+                ExperimentDefinition,
+            )
+            .join(
+                ResearchArtifactRecord,
+                ForecastResearchLink.artifact_id == ResearchArtifactRecord.artifact_id,
+            )
+            .join(
+                ResearchRunRecord,
+                ResearchArtifactRecord.research_run_id == ResearchRunRecord.research_run_id,
+            )
+            .join(
+                ExperimentDefinition,
+                ResearchRunRecord.experiment_id == ExperimentDefinition.experiment_id,
+            )
+            .where(ForecastResearchLink.experiment_result_id.in_(result_ids))
+        )
+
+        dependency_rows = self._session.execute(dependency_query).all()
+        dependency_map: dict[int, list[ForecastResearchDependency]] = {}
+        for link, artifact, research_run, experiment in dependency_rows:
+            dependency_map.setdefault(link.experiment_result_id, []).append(
+                ForecastResearchDependency(
+                    link=link,
+                    artifact=artifact,
+                    research_run=research_run,
+                    experiment=experiment,
+                )
+            )
+
         bundles: list[MarketForecastBundle] = []
         for result, experiment_run, experiment, processed_market, processing_run in rows:
             bundles.append(
@@ -176,9 +229,17 @@ class ExperimentRepository:
                     experiment_run=experiment_run,
                     experiment=experiment,
                     processing_run=processing_run,
+                    dependencies=dependency_map.get(
+                        result.experiment_result_id, []
+                    ),
                 )
             )
         return bundles
 
 
-__all__ = ["ExperimentRepository", "EventResearchBundle", "MarketForecastBundle"]
+__all__ = [
+    "ExperimentRepository",
+    "EventResearchBundle",
+    "MarketForecastBundle",
+    "ForecastResearchDependency",
+]

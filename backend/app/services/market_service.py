@@ -12,6 +12,7 @@ from app.repositories import (
     EventGroupRecord,
     ExperimentRepository,
     EventResearchBundle,
+    ForecastResearchDependency,
     MarketForecastBundle,
     MarketRepository,
 )
@@ -20,11 +21,13 @@ from app.schemas import (
     EventWithMarkets,
     ExperimentDescriptor,
     ExperimentRunSummary,
+    ForecastResearchReference,
     ForecastResult,
     Market,
     PipelineRunSummary,
     ResearchArtifact,
 )
+from app.models import ExperimentStage
 
 
 @dataclass(slots=True)
@@ -213,9 +216,11 @@ class MarketService:
                 bundle.experiment,
                 bundle.artifact.variant_name,
                 bundle.artifact.variant_version,
-                bundle.experiment_run.stage,
+                ExperimentStage.RESEARCH.value,
             ),
-            run=self._build_run_summary(bundle.experiment_run),
+            run=self._build_run_summary(
+                bundle.research_run, identifier_attr="research_run_id"
+            ),
             pipeline_run=self._build_pipeline_summary(bundle.processing_run),
             artifact_id=bundle.artifact.artifact_id,
             artifact_uri=bundle.artifact.artifact_uri,
@@ -226,6 +231,10 @@ class MarketService:
         )
 
     def _adapt_forecast_bundle(self, bundle: MarketForecastBundle) -> ForecastResult:
+        dependencies = [
+            self._adapt_forecast_dependency(dependency)
+            for dependency in bundle.dependencies
+        ]
         return ForecastResult(
             descriptor=self._build_descriptor(
                 bundle.experiment,
@@ -233,13 +242,32 @@ class MarketService:
                 bundle.result.variant_version or "",
                 bundle.experiment_run.stage,
             ),
-            run=self._build_run_summary(bundle.experiment_run),
+            run=self._build_run_summary(
+                bundle.experiment_run, identifier_attr="experiment_run_id"
+            ),
             pipeline_run=self._build_pipeline_summary(bundle.processing_run),
             recorded_at=bundle.result.recorded_at,
             score=bundle.result.score,
             artifact_uri=bundle.result.artifact_uri,
-            source_artifact_id=bundle.result.source_artifact_id,
             payload=bundle.result.payload,
+            research_dependencies=dependencies,
+        )
+
+    def _adapt_forecast_dependency(
+        self, dependency: ForecastResearchDependency
+    ) -> ForecastResearchReference:
+        return ForecastResearchReference(
+            dependency_key=dependency.link.dependency_key,
+            artifact_id=dependency.link.artifact_id,
+            descriptor=self._build_descriptor(
+                dependency.experiment,
+                dependency.artifact.variant_name,
+                dependency.artifact.variant_version,
+                ExperimentStage.RESEARCH.value,
+            ),
+            run=self._build_run_summary(
+                dependency.research_run, identifier_attr="research_run_id"
+            ),
         )
 
     @staticmethod
@@ -258,9 +286,14 @@ class MarketService:
         )
 
     @staticmethod
-    def _build_run_summary(run_record: Any) -> ExperimentRunSummary:
+    def _build_run_summary(
+        run_record: Any, *, identifier_attr: str
+    ) -> ExperimentRunSummary:
+        run_identifier = getattr(run_record, identifier_attr, None)
+        if run_identifier is None:
+            run_identifier = getattr(run_record, "run_id")
         return ExperimentRunSummary(
-            run_id=run_record.run_id,
+            run_id=run_identifier,
             status=run_record.status,
             started_at=run_record.started_at,
             finished_at=run_record.finished_at,

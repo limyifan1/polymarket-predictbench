@@ -725,28 +725,36 @@ function MarketForecasts({
           const reasoning = extractForecastReasoning(result.payload ?? null);
           const variantKey = makeDescriptorKey(result.descriptor);
           const references = extractResearchReferences(result.payload ?? null);
-          let researchInputLabels = Array.from(
-            new Set(
-              references.map((reference) => {
-                const artifact =
-                  (reference.artifactId ? researchById.get(reference.artifactId) : undefined) ??
-                  researchByVariantName.get(reference.variant) ??
-                  null;
-                return artifact ? formatResearchInputName(artifact) : reference.variant;
-              }),
-            ),
-          ).filter(Boolean);
+          const dependencyLabels = result.research_dependencies.map((dependency) => {
+            const artifact =
+              researchById.get(dependency.artifact_id) ??
+              researchByVariantName.get(dependency.descriptor.variant_name) ??
+              null;
+            if (artifact) {
+              return formatResearchInputName(artifact);
+            }
+            return dependency.dependency_key ?? dependency.descriptor.variant_name ?? dependency.artifact_id;
+          });
+
+          const payloadLabels = references.map((reference) => {
+            const artifact =
+              (reference.artifactId ? researchById.get(reference.artifactId) : undefined) ??
+              researchByVariantName.get(reference.variant) ??
+              null;
+            return artifact ? formatResearchInputName(artifact) : reference.variant;
+          });
+
+          let researchInputLabels = Array.from(new Set([...dependencyLabels, ...payloadLabels])).filter(
+            Boolean,
+          );
 
           if (!researchInputLabels.length) {
             const fallbackArtifact =
-              (result.source_artifact_id ? researchById.get(result.source_artifact_id) : undefined) ??
               researchByVariantName.get(result.descriptor.variant_name) ??
               researchByVariant.get(variantKey) ??
               null;
             if (fallbackArtifact) {
               researchInputLabels = [formatResearchInputName(fallbackArtifact)];
-            } else if (result.source_artifact_id) {
-              researchInputLabels = [result.source_artifact_id];
             }
           }
 

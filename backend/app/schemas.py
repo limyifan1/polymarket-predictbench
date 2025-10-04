@@ -135,8 +135,10 @@ class ForecastResult(BaseModel):
     recorded_at: datetime
     score: float | None = None
     artifact_uri: str | None = None
-    source_artifact_id: str | None = None
     payload: dict[str, Any] | None = None
+    research_dependencies: list["ForecastResearchReference"] = Field(
+        default_factory=list
+    )
 
     model_config = {"from_attributes": True}
 
@@ -146,6 +148,15 @@ class ForecastResult(BaseModel):
         if value is None:
             return None
         return float(value)
+
+
+class ForecastResearchReference(BaseModel):
+    dependency_key: str | None = None
+    artifact_id: str
+    descriptor: ExperimentDescriptor
+    run: ExperimentRunSummary
+
+    model_config = {"from_attributes": True}
 
 
 class MarketStatusCount(BaseModel):

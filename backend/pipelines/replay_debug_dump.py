@@ -19,6 +19,7 @@ from app.models import ExperimentStage
 from app.repositories import MarketRepository, ProcessingRepository
 from app.repositories.pipeline_models import (
     ExperimentResultInput,
+    ForecastResearchLinkInput,
     ProcessedContractInput,
     ProcessedEventInput,
     ProcessedMarketInput,
@@ -274,10 +275,13 @@ def _persist_event_bundle(
 
         for suite_id, suite_dump in sorted(event.suites.items()):
             for variant_key, research_entry in suite_dump.research.items():
-                experiment_run_id = research_entry.get("experiment_run_id")
-                if not experiment_run_id:
+                research_run_id = (
+                    research_entry.get("research_run_id")
+                    or research_entry.get("experiment_run_id")
+                )
+                if not research_run_id:
                     logger.warning(
-                        "Missing experiment_run_id for research variant %s in suite %s",
+                        "Missing research_run_id for research variant %s in suite %s",
                         variant_key,
                         suite_id,
                     )
@@ -292,27 +296,13 @@ def _persist_event_bundle(
                 processing_repo.record_research_artifact(
                     ResearchArtifactInput(
                         artifact_id=artifact_id,
-                        experiment_run_id=experiment_run_id,
+                        research_run_id=research_run_id,
                         processed_market_id=None,
                         processed_event_id=processed_event.processed_event_id,
                         variant_name=research_entry.get("variant"),
                         variant_version=research_entry.get("version"),
                         artifact_hash=research_entry.get("artifact_hash"),
                         payload=payload,
-                        artifact_uri=research_entry.get("artifact_uri"),
-                    )
-                )
-                processing_repo.record_experiment_result(
-                    ExperimentResultInput(
-                        experiment_run_id=experiment_run_id,
-                        processed_market_id=None,
-                        processed_event_id=processed_event.processed_event_id,
-                        stage=ExperimentStage.RESEARCH.value,
-                        variant_name=research_entry.get("variant"),
-                        variant_version=research_entry.get("version"),
-                        source_artifact_id=artifact_id,
-                        payload=payload,
-                        score=None,
                         artifact_uri=research_entry.get("artifact_uri"),
                     )
                 )
@@ -345,10 +335,6 @@ def _persist_event_bundle(
                         if resolved:
                             dependencies[dependency_name] = resolved
 
-                    primary_artifact_id = None
-                    if len(dependencies) == 1:
-                        primary_artifact_id = next(iter(dependencies.values()))
-
                     payload = _enrich_payload(
                         {
                             "outcomePrices": forecast_entry.get("outcomePrices"),
@@ -358,7 +344,7 @@ def _persist_event_bundle(
                         references=dependencies if dependencies else None,
                     )
 
-                    processing_repo.record_experiment_result(
+                    result_record = processing_repo.record_experiment_result(
                         ExperimentResultInput(
                             experiment_run_id=experiment_run_id,
                             processed_market_id=processed_market_id,
@@ -366,12 +352,22 @@ def _persist_event_bundle(
                             stage=ExperimentStage.FORECAST.value,
                             variant_name=forecast_entry.get("variant", variant_name),
                             variant_version=forecast_entry.get("version"),
-                            source_artifact_id=primary_artifact_id,
                             payload=payload,
                             score=_parse_float(forecast_entry.get("score")),
                             artifact_uri=forecast_entry.get("artifact_uri"),
                         )
                     )
+
+                    if dependencies:
+                        link_inputs = [
+                            ForecastResearchLinkInput(
+                                experiment_result_id=result_record.experiment_result_id,
+                                artifact_id=artifact_id,
+                                dependency_key=dependency_name,
+                            )
+                            for dependency_name, artifact_id in dependencies.items()
+                        ]
+                        processing_repo.record_forecast_research_links(link_inputs)
 
 
 def main() -> None:

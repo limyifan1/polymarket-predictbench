@@ -25,10 +25,12 @@ from app.repositories import MarketRepository, ProcessingRepository
 from app.repositories.pipeline_models import (
     ExperimentResultInput,
     ExperimentRunInput,
+    ForecastResearchLinkInput,
     ProcessedContractInput,
     ProcessedEventInput,
     ProcessedMarketInput,
     ResearchArtifactInput,
+    ResearchRunInput,
 )
 from app.domain import NormalizedEvent, NormalizedMarket
 from ingestion.client import PolymarketClient
@@ -544,28 +546,6 @@ def _persist_event_group(
     db_retry_attempts: int,
     db_retry_backoff: Sequence[float],
 ) -> bool:
-    prepared_research: dict[
-        str, dict[str, tuple[ResearchExecutionRecord, dict[str, Any] | None, str | None]]
-    ] = {}
-    if research_records:
-        for suite_id, records in research_records.items():
-            suite_payloads: dict[
-                str, tuple[ResearchExecutionRecord, dict[str, Any] | None, str | None]
-            ] = {}
-            for variant_name, record in records.items():
-                payload = _enrich_payload(
-                    record.output.payload,
-                    diagnostics=record.output.diagnostics,
-                )
-                artifact_hash = (
-                    record.output.artifact_hash
-                    or _compute_artifact_hash(payload)
-                )
-                if record.artifact_id is None:
-                    record.artifact_id = str(uuid4())
-                suite_payloads[variant_name] = (record, payload, artifact_hash)
-            prepared_research[suite_id] = suite_payloads
-
     def _operation(session: Any) -> bool:
         processing_repo = processing_repo_factory(session)
         market_repo = market_repo_factory(session)
@@ -601,55 +581,65 @@ def _persist_event_group(
             market_to_processed[market.market_id] = processed_market.processed_market_id
             market_repo.upsert_market(market)
 
-        for suite_payloads in prepared_research.values():
-            for record, payload, artifact_hash in suite_payloads.values():
-                artifact_id = record.artifact_id or str(uuid4())
-                record.artifact_id = artifact_id
-                processing_repo.record_research_artifact(
-                    ResearchArtifactInput(
-                        artifact_id=artifact_id,
-                        experiment_run_id=record.meta.run_identifier,
-                        processed_market_id=None,
-                        processed_event_id=processed_event.processed_event_id,
-                        variant_name=record.meta.strategy_name,
-                        variant_version=record.meta.strategy_version,
-                        artifact_hash=artifact_hash,
-                        payload=payload,
-                        artifact_uri=record.output.artifact_uri,
+        if research_records:
+            for suite_records in research_records.values():
+                for record in suite_records.values():
+                    payload = _enrich_payload(
+                        record.output.payload,
+                        diagnostics=record.output.diagnostics,
                     )
-                )
-                processing_repo.record_experiment_result(
-                    ExperimentResultInput(
-                        experiment_run_id=record.meta.run_identifier,
-                        processed_market_id=None,
-                        processed_event_id=processed_event.processed_event_id,
-                        stage=ExperimentStage.RESEARCH.value,
-                        variant_name=record.meta.strategy_name,
-                        variant_version=record.meta.strategy_version,
-                        source_artifact_id=artifact_id,
-                        payload=payload,
-                        score=None,
-                        artifact_uri=record.output.artifact_uri,
+                    artifact_hash = (
+                        record.output.artifact_hash
+                        or _compute_artifact_hash(payload)
                     )
+                    if record.artifact_id is None:
+                        record.artifact_id = str(uuid4())
+                    processing_repo.record_research_artifact(
+                        ResearchArtifactInput(
+                            artifact_id=record.artifact_id,
+                            research_run_id=record.meta.run_identifier,
+                            processed_market_id=None,
+                            processed_event_id=processed_event.processed_event_id,
+                            variant_name=record.meta.strategy_name,
+                            variant_version=record.meta.strategy_version,
+                            artifact_hash=artifact_hash,
+                            payload=payload,
+                            artifact_uri=record.output.artifact_uri,
+                        )
+                    )
+
+        available_research: dict[str, dict[str, str]] = {}
+        if processed_event.event_id:
+            rows = processing_repo.load_event_research_artifacts(
+                processed_event.event_id
+            )
+            for artifact, research_run in rows:
+                suite_bucket = available_research.setdefault(
+                    research_run.suite_id, {}
                 )
+                suite_bucket.setdefault(artifact.variant_name, artifact.artifact_id)
+        elif research_records:
+            for suite_id, records in research_records.items():
+                suite_bucket = available_research.setdefault(suite_id, {})
+                for variant_name, record in records.items():
+                    if record.artifact_id:
+                        suite_bucket.setdefault(variant_name, record.artifact_id)
 
         for forecast_record in forecast_records:
             dependencies: dict[str, str] = {}
-            suite_records = prepared_research.get(
+            dependency_records: list[tuple[str, str]] = []
+            suite_records = available_research.get(
                 forecast_record.meta.suite_id, {}
             )
             for dep in forecast_record.dependencies:
                 prepared = suite_records.get(dep)
                 if prepared:
-                    dependency_record = prepared[0]
-                    if dependency_record.artifact_id:
-                        dependencies[dep] = dependency_record.artifact_id
+                    dependencies[dep] = prepared
+                    dependency_records.append((dep, prepared))
 
-            forecast_record.source_artifact_ids = dependencies if dependencies else None
-
-            primary_artifact_id = None
-            if len(dependencies) == 1:
-                primary_artifact_id = next(iter(dependencies.values()))
+            forecast_record.source_artifact_ids = (
+                dependencies if dependencies else None
+            )
 
             processed_market_id = market_to_processed.get(
                 forecast_record.output.market_id
@@ -670,7 +660,7 @@ def _persist_event_group(
                 references=dependencies if dependencies else None,
             )
 
-            processing_repo.record_experiment_result(
+            result = processing_repo.record_experiment_result(
                 ExperimentResultInput(
                     experiment_run_id=forecast_record.meta.run_identifier,
                     processed_market_id=processed_market_id,
@@ -678,12 +668,22 @@ def _persist_event_group(
                     stage=ExperimentStage.FORECAST.value,
                     variant_name=forecast_record.meta.strategy_name,
                     variant_version=forecast_record.meta.strategy_version,
-                    source_artifact_id=primary_artifact_id,
                     payload=payload,
                     score=forecast_record.output.score,
                     artifact_uri=forecast_record.output.artifact_uri,
                 )
             )
+
+            if dependency_records:
+                link_inputs = [
+                    ForecastResearchLinkInput(
+                        experiment_result_id=result.experiment_result_id,
+                        artifact_id=artifact_id,
+                        dependency_key=dependency,
+                    )
+                    for dependency, artifact_id in dependency_records
+                ]
+                processing_repo.record_forecast_research_links(link_inputs)
 
         return True
 
@@ -733,22 +733,41 @@ def _finalize_processing_metadata(
             )
 
         for meta in experiment_metas:
-            processing_repo.record_experiment_run(
-                ExperimentRunInput(
-                    experiment_run_id=meta.run_identifier,
-                    run_id=run_id,
-                    experiment_name=meta.experiment_name,
-                    experiment_version=meta.strategy_version,
-                    stage=meta.stage.value,
-                    status=meta.status,
-                    started_at=meta.started_at,
-                    finished_at=meta.finished_at,
-                    error_message="; ".join(meta.error_messages)
-                    if meta.error_messages
-                    else None,
-                ),
-                description=meta.description,
-            )
+            if meta.stage == ExperimentStage.RESEARCH:
+                processing_repo.record_research_run(
+                    ResearchRunInput(
+                        research_run_id=meta.run_identifier,
+                        run_id=run_id,
+                        suite_id=meta.suite_id,
+                        experiment_name=meta.experiment_name,
+                        strategy_name=meta.strategy_name,
+                        strategy_version=meta.strategy_version,
+                        status=meta.status,
+                        started_at=meta.started_at,
+                        finished_at=meta.finished_at,
+                        error_message="; ".join(meta.error_messages)
+                        if meta.error_messages
+                        else None,
+                        description=meta.description,
+                    )
+                )
+            else:
+                processing_repo.record_experiment_run(
+                    ExperimentRunInput(
+                        experiment_run_id=meta.run_identifier,
+                        run_id=run_id,
+                        experiment_name=meta.experiment_name,
+                        experiment_version=meta.strategy_version,
+                        stage=meta.stage.value,
+                        status=meta.status,
+                        started_at=meta.started_at,
+                        finished_at=meta.finished_at,
+                        error_message="; ".join(meta.error_messages)
+                        if meta.error_messages
+                        else None,
+                    ),
+                    description=meta.description,
+                )
 
     _run_with_db_retries(
         description="finalizing processing metadata",
@@ -1652,20 +1671,37 @@ def run_pipeline(
             )
             processing_run_id = processing_run.run_id
             for meta in experiment_metas:
-                processing_repo.record_experiment_run(
-                    ExperimentRunInput(
-                        experiment_run_id=meta.run_identifier,
-                        run_id=run_id,
-                        experiment_name=meta.experiment_name,
-                        experiment_version=meta.strategy_version,
-                        stage=meta.stage.value,
-                        status=meta.status,
-                        started_at=meta.started_at,
-                        finished_at=None,
-                        error_message=None,
-                    ),
-                    description=meta.description,
-                )
+                if meta.stage == ExperimentStage.RESEARCH:
+                    processing_repo.record_research_run(
+                        ResearchRunInput(
+                            research_run_id=meta.run_identifier,
+                            run_id=run_id,
+                            suite_id=meta.suite_id,
+                            experiment_name=meta.experiment_name,
+                            strategy_name=meta.strategy_name,
+                            strategy_version=meta.strategy_version,
+                            status=meta.status,
+                            started_at=meta.started_at,
+                            finished_at=None,
+                            error_message=None,
+                            description=meta.description,
+                        )
+                    )
+                else:
+                    processing_repo.record_experiment_run(
+                        ExperimentRunInput(
+                            experiment_run_id=meta.run_identifier,
+                            run_id=run_id,
+                            experiment_name=meta.experiment_name,
+                            experiment_version=meta.strategy_version,
+                            stage=meta.stage.value,
+                            status=meta.status,
+                            started_at=meta.started_at,
+                            finished_at=None,
+                            error_message=None,
+                        ),
+                        description=meta.description,
+                    )
 
     if client_factory is None:
         def _default_client_factory() -> PolymarketClient:
