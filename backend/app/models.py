@@ -133,6 +133,7 @@ class ProcessedEvent(Base):
 
     processed_event_id: Mapped[str] = mapped_column(String, primary_key=True)
     run_id: Mapped[str] = mapped_column(String, ForeignKey("processing_runs.run_id"), nullable=False)
+    event_key: Mapped[str | None] = mapped_column(String, nullable=True)
     event_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_slug: Mapped[str | None] = mapped_column(String, nullable=True)
     event_title: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -152,6 +153,7 @@ class ProcessedEvent(Base):
 
     __table_args__ = (
         UniqueConstraint("run_id", "event_id", name="uq_processed_event_scope"),
+        UniqueConstraint("event_key", name="uq_processed_event_key"),
     )
 
 
