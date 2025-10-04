@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -112,15 +112,47 @@ def _ensure_column(engine, table: str, column: str, definition: str) -> None:
         connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
 
 
+def _backfill_processed_event_keys() -> None:
+    from .models import ProcessedEvent
+
+    with SessionLocal() as session:
+        query = select(ProcessedEvent).where(ProcessedEvent.event_key.is_(None))
+        events = session.execute(query).scalars().all()
+        if not events:
+            return
+
+        updated = 0
+        for event in events:
+            if event.event_key:
+                continue
+            if event.event_id:
+                event.event_key = event.event_id
+            else:
+                market_ids = sorted(
+                    market.market_id for market in event.markets if market.market_id
+                )
+                if market_ids:
+                    event.event_key = "market:" + ",".join(market_ids)
+            if event.event_key:
+                updated += 1
+
+        if updated:
+            session.commit()
+        else:
+            session.rollback()
+
+
 def _apply_schema_updates() -> None:
     _ensure_column(engine, "markets", "event_id", "VARCHAR")
     _ensure_column(engine, "processed_markets", "processed_event_id", "VARCHAR")
+    _ensure_column(engine, "processed_events", "event_key", "VARCHAR")
     _ensure_column(engine, "experiment_results", "processed_event_id", "VARCHAR")
     _ensure_column(engine, "experiment_runs", "stage", "VARCHAR")
     _ensure_column(engine, "experiment_results", "stage", "VARCHAR")
     _ensure_column(engine, "experiment_results", "variant_name", "VARCHAR")
     _ensure_column(engine, "experiment_results", "variant_version", "VARCHAR")
     _ensure_column(engine, "experiment_results", "source_artifact_id", "VARCHAR")
+    _backfill_processed_event_keys()
 
 
 def get_db() -> Generator[Session, None, None]:

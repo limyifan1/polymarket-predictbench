@@ -32,6 +32,7 @@ class ProcessedMarketInput:
 class ProcessedEventInput:
     processed_event_id: str
     run_id: str
+    event_key: str | None
     event_id: str | None
     event_slug: str | None
     event_title: str | None
