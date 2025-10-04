@@ -102,6 +102,7 @@ export type MarketListResponse = {
 };
 
 export type EventWithMarkets = Event & {
+  categories: string[];
   markets: Market[];
   market_count: number;
   research: ResearchArtifact[];

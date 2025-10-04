@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { createElement, type ReactNode, useMemo, useState } from "react";
 
 import { formatDateTime } from "@/lib/date";
 import type {
@@ -105,10 +105,23 @@ function primaryLine(text: string | null | undefined): string | null {
   return firstLine ?? null;
 }
 
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const cutoff = Math.max(maxLength - 3, 0);
+  return `${value.slice(0, cutoff)}...`;
+}
+
 type ResearchSource = {
   title: string;
   url: string;
   snippet?: string | null;
+};
+
+type NarrativeContent = {
+  text: string;
+  format: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -273,11 +286,261 @@ function extractResearchSources(payload: Record<string, unknown> | null | undefi
     .filter((value): value is ResearchSource => Boolean(value));
 }
 
+function extractResearchNarrative(payload: Record<string, unknown> | null | undefined): NarrativeContent | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const content = typeof payload.content === "string" ? payload.content.trim() : null;
+  if (!content) {
+    return null;
+  }
+  const formatRaw = typeof payload.content_format === "string" ? payload.content_format.trim() : "";
+  const format = formatRaw.length ? formatRaw.toLowerCase() : "text";
+  return {
+    text: content,
+    format,
+  } satisfies NarrativeContent;
+}
+
+const MARKDOWN_SAFE_PROTOCOL = /^(https?:|mailto:|tel:)/i;
+
+function sanitizeMarkdownUrl(rawUrl: string): string | null {
+  const url = rawUrl.trim();
+  if (!url) {
+    return null;
+  }
+  if (MARKDOWN_SAFE_PROTOCOL.test(url)) {
+    return url;
+  }
+  if (url.startsWith("/")) {
+    return url;
+  }
+  if (url.startsWith("#")) {
+    return url;
+  }
+  return null;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix = "inline"): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern =
+    /\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)|\*(.+?)\*|_(.+?)_|~~(.+?)~~/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let matchIndex = 0;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const index = match.index ?? 0;
+    if (index > lastIndex) {
+      nodes.push(text.slice(lastIndex, index));
+    }
+
+    if (match[1]) {
+      nodes.push(
+        <strong key={`${keyPrefix}-strong-${matchIndex}`}>
+          {renderInlineMarkdown(match[1], `${keyPrefix}-strong-${matchIndex}`)}
+        </strong>,
+      );
+    } else if (match[2]) {
+      nodes.push(
+        <strong key={`${keyPrefix}-strongAlt-${matchIndex}`}>
+          {renderInlineMarkdown(match[2], `${keyPrefix}-strongAlt-${matchIndex}`)}
+        </strong>,
+      );
+    } else if (match[3]) {
+      nodes.push(
+        <code key={`${keyPrefix}-code-${matchIndex}`}>{match[3]}</code>,
+      );
+    } else if (match[4] && match[5]) {
+      const href = sanitizeMarkdownUrl(match[5]);
+      const labelNodes = renderInlineMarkdown(match[4], `${keyPrefix}-link-${matchIndex}`);
+      if (href) {
+        nodes.push(
+          <a key={`${keyPrefix}-link-${matchIndex}`} href={href} target="_blank" rel="noopener noreferrer">
+            {labelNodes}
+          </a>,
+        );
+      } else {
+        nodes.push(...labelNodes);
+      }
+    } else if (match[6]) {
+      nodes.push(
+        <em key={`${keyPrefix}-em-${matchIndex}`}>
+          {renderInlineMarkdown(match[6], `${keyPrefix}-em-${matchIndex}`)}
+        </em>,
+      );
+    } else if (match[7]) {
+      nodes.push(
+        <em key={`${keyPrefix}-emAlt-${matchIndex}`}>
+          {renderInlineMarkdown(match[7], `${keyPrefix}-emAlt-${matchIndex}`)}
+        </em>,
+      );
+    } else if (match[8]) {
+      nodes.push(
+        <del key={`${keyPrefix}-del-${matchIndex}`}>
+          {renderInlineMarkdown(match[8], `${keyPrefix}-del-${matchIndex}`)}
+        </del>,
+      );
+    }
+
+    lastIndex = pattern.lastIndex;
+    matchIndex += 1;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+function renderParagraphLines(lines: string[], keyPrefix: string): ReactNode[] {
+  const children: ReactNode[] = [];
+  lines.forEach((line, index) => {
+    const hasHardBreak = / {2}$/.test(line);
+    const trimmed = hasHardBreak ? line.replace(/ {2,}$/, "") : line;
+    children.push(...renderInlineMarkdown(trimmed, `${keyPrefix}-line-${index}`));
+    if (hasHardBreak) {
+      children.push(<br key={`${keyPrefix}-br-${index}`} />);
+    } else if (index < lines.length - 1) {
+      children.push(" ");
+    }
+  });
+  return children;
+}
+
+function renderMarkdownContent(markdown: string): ReactNode[] {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const elements: ReactNode[] = [];
+  let paragraphLines: string[] = [];
+  let listItems: string[] = [];
+  let listType: "ul" | "ol" | null = null;
+  let blockquoteLines: string[] = [];
+  let uniqueIndex = 0;
+
+  const flushParagraph = () => {
+    if (!paragraphLines.length) {
+      return;
+    }
+    const key = `paragraph-${uniqueIndex}`;
+    elements.push(<p key={key}>{renderParagraphLines(paragraphLines, key)}</p>);
+    uniqueIndex += 1;
+    paragraphLines = [];
+  };
+
+  const flushList = () => {
+    if (!listType || !listItems.length) {
+      listItems = [];
+      listType = null;
+      return;
+    }
+    const key = `list-${uniqueIndex}`;
+    const items = listItems.map((item, itemIndex) => (
+      <li key={`${key}-item-${itemIndex}`}>
+        {renderInlineMarkdown(item.trim(), `${key}-item-${itemIndex}`)}
+      </li>
+    ));
+    const listElement = listType === "ul" ? <ul key={key}>{items}</ul> : <ol key={key}>{items}</ol>;
+    elements.push(listElement);
+    uniqueIndex += 1;
+    listItems = [];
+    listType = null;
+  };
+
+  const flushBlockquote = () => {
+    if (!blockquoteLines.length) {
+      return;
+    }
+    const key = `blockquote-${uniqueIndex}`;
+    elements.push(
+      <blockquote key={key}>{renderMarkdownContent(blockquoteLines.join("\n"))}</blockquote>,
+    );
+    uniqueIndex += 1;
+    blockquoteLines = [];
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
+      continue;
+    }
+
+    const headingMatch = rawLine.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      flushBlockquote();
+      const level = Math.min(headingMatch[1].length, 6);
+      const key = `heading-${uniqueIndex}`;
+      elements.push(
+        createElement(`h${level}` as const, { key }, renderInlineMarkdown(headingMatch[2].trim(), `${key}-inline`)),
+      );
+      uniqueIndex += 1;
+      continue;
+    }
+
+    const unorderedMatch = rawLine.match(/^\s*[-*+]\s+(.*)$/);
+    if (unorderedMatch) {
+      flushParagraph();
+      flushBlockquote();
+      if (listType !== "ul") {
+        flushList();
+        listType = "ul";
+      }
+      listItems.push(unorderedMatch[1] ?? "");
+      continue;
+    }
+
+    const orderedMatch = rawLine.match(/^\s*\d+\.\s+(.*)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      flushBlockquote();
+      if (listType !== "ol") {
+        flushList();
+        listType = "ol";
+      }
+      listItems.push(orderedMatch[1] ?? "");
+      continue;
+    }
+
+    const blockquoteMatch = rawLine.match(/^\s*>\s?(.*)$/);
+    if (blockquoteMatch) {
+      flushParagraph();
+      flushList();
+      blockquoteLines.push(blockquoteMatch[1] ?? "");
+      continue;
+    }
+
+    if (listType) {
+      flushList();
+    }
+    if (blockquoteLines.length) {
+      flushBlockquote();
+    }
+    paragraphLines.push(rawLine);
+  }
+
+  flushParagraph();
+  flushList();
+  flushBlockquote();
+
+  if (!elements.length) {
+    return [markdown];
+  }
+
+  return elements;
+}
+
 type ResearchCardContent = {
   summary: string | null;
   confidence: string | null;
   insights: string[];
   sources: ResearchSource[];
+  narrative: NarrativeContent | null;
 };
 
 function timelineEntriesToInsights(
@@ -323,6 +586,7 @@ function buildResearchCardContent(artifact: ResearchArtifact): ResearchCardConte
   let confidence = extractResearchConfidence(payload);
   let insights = extractResearchInsights(payload);
   let sources = extractResearchSources(payload);
+  const narrative = extractResearchNarrative(payload);
 
   const experimentNameRaw = artifact.descriptor.experiment_name;
   const experimentName = experimentNameRaw.split(":").at(-1) ?? experimentNameRaw;
@@ -491,11 +755,19 @@ function buildResearchCardContent(artifact: ResearchArtifact): ResearchCardConte
     }
   }
 
+  if (!summary && narrative) {
+    const firstLine = primaryLine(narrative.text);
+    if (firstLine) {
+      summary = truncateText(firstLine, 200);
+    }
+  }
+
   return {
     summary,
     confidence: normalizeConfidence(confidence),
     insights,
     sources,
+    narrative,
   } satisfies ResearchCardContent;
 }
 
@@ -585,6 +857,7 @@ function EventResearch({ research, eventId }: { research: ResearchArtifact[]; ev
             const insights = content.insights.slice(0, 4);
             const sources = content.sources.slice(0, 4);
             const confidence = content.confidence;
+            const narrative = content.narrative;
             const key =
               artifact.artifact_id ?? `${artifact.descriptor.experiment_name}:${artifact.descriptor.variant_name}`;
 
@@ -621,6 +894,7 @@ function EventResearch({ research, eventId }: { research: ResearchArtifact[]; ev
                     </ul>
                   </div>
                 )}
+                {narrative && <ResearchNarrative narrative={narrative} />}
                 {sources.length > 0 && (
                   <div className="research-card__section">
                     <h5>Primary sources</h5>
@@ -653,6 +927,34 @@ function EventResearch({ research, eventId }: { research: ResearchArtifact[]; ev
         </div>
       </div>
     </section>
+  );
+}
+
+function ResearchNarrative({ narrative }: { narrative: NarrativeContent }) {
+  const [expanded, setExpanded] = useState(false);
+  const previewLimit = 1800;
+  const shouldTruncate = narrative.text.length > previewLimit;
+  const text = expanded || !shouldTruncate ? narrative.text : `${narrative.text.slice(0, previewLimit).trimEnd()}...`;
+  const isMarkdown = narrative.format === "markdown";
+  const renderedContent = useMemo<ReactNode>(() => {
+    return isMarkdown ? renderMarkdownContent(text) : text;
+  }, [isMarkdown, text]);
+
+  return (
+    <div className="research-card__narrative" data-expanded={expanded ? "true" : "false"}>
+      <div className="research-card__narrative-content" data-format={narrative.format}>
+        {renderedContent}
+      </div>
+      {shouldTruncate && (
+        <button
+          type="button"
+          className="research-card__narrative-toggle"
+          onClick={() => setExpanded((prev) => !prev)}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -908,7 +1210,18 @@ export function MarketTable({ events }: { events: EventWithMarkets[] }) {
                           event.title ?? event.slug ?? event.event_id
                         )}
                       </h3>
-                      <span className="badge">{event.market_count} markets</span>
+                      <div className="event-card__meta">
+                        <span className="badge">{event.market_count} markets</span>
+                        {event.categories.length > 0 && (
+                          <div className="event-card__tags">
+                            {event.categories.map((category) => (
+                              <span key={category} className="badge">
+                                {category}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <button
                       type="button"

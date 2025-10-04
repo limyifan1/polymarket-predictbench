@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from loguru import logger
@@ -19,6 +20,22 @@ from ..base import (
 from ...context import PipelineContext
 from ..llm_support import resolve_llm_request
 from ..openai.base import DEFAULT_FORECAST_MODEL, _format_market, _strategy_stage_name
+
+
+def _extract_research_date(payload: Mapping[str, Any] | None) -> date | None:
+    if not isinstance(payload, Mapping):
+        return None
+    generated_at = payload.get("generated_at")
+    if not isinstance(generated_at, str):
+        return None
+    candidate = generated_at.strip()
+    if not candidate:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return timestamp.date()
 
 
 def _forecast_schema(market: NormalizedMarket) -> tuple[str, dict[str, Any]]:
@@ -133,6 +150,7 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
         market: NormalizedMarket,
         briefing_payload: Mapping[str, Any],
         supplemental_research: Sequence[tuple[str, Mapping[str, Any]]],
+        research_date: date,
     ) -> list[dict[str, str]]:
         briefing_json = json.dumps(briefing_payload, indent=2, ensure_ascii=False)
         supplemental_chunks = [
@@ -142,11 +160,14 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
         supplemental_text = (
             "\n\n".join(supplemental_chunks) if supplemental_chunks else "(none)"
         )
+        generated_on = research_date.isoformat()
         system = (
             "You are a disciplined superforecaster. Anchor to the base rate, incorporate scenario "
             "analysis, and make explicit, numerically calibrated probability updates."
         )
         user = (
+            f"The latest research artifacts were generated on {generated_on}."
+            "\n\n"
             "Market details:\n"
             f"{_format_market(market, include_contract_prices=False)}"
             "\n\nSuperforecaster briefing JSON:\n"
@@ -168,18 +189,26 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
     def _collect_research(
         self,
         research_artifacts: Mapping[str, ResearchOutput],
-    ) -> tuple[Mapping[str, Any], list[tuple[str, Mapping[str, Any]]]]:
+    ) -> tuple[Mapping[str, Any], list[tuple[str, Mapping[str, Any]]], list[date]]:
         briefing_artifact = research_artifacts.get("superforecaster_briefing")
         if not briefing_artifact or briefing_artifact.payload is None:
             raise ExperimentExecutionError(
                 "Superforecaster forecast missing required briefing artifact"
             )
         supplemental: list[tuple[str, Mapping[str, Any]]] = []
+        dates: list[date] = []
+        briefing_payload = briefing_artifact.payload
+        generated_at = _extract_research_date(briefing_payload)
+        if generated_at is not None:
+            dates.append(generated_at)
         for name in self.optional_research:
             artifact = research_artifacts.get(name)
             if artifact and artifact.payload is not None:
                 supplemental.append((name, artifact.payload))
-        return briefing_artifact.payload, supplemental
+                optional_date = _extract_research_date(artifact.payload)
+                if optional_date is not None:
+                    dates.append(optional_date)
+        return briefing_payload, supplemental, dates
 
     def run(
         self,
@@ -199,7 +228,10 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
             require_api_key=self.require_api_key,
         )
 
-        briefing_payload, supplemental = self._collect_research(research_artifacts)
+        briefing_payload, supplemental, research_dates = self._collect_research(
+            research_artifacts
+        )
+        research_date = max(research_dates) if research_dates else context.run_date
 
         outputs: list[ForecastOutput] = []
         for market in group.markets:
@@ -220,6 +252,7 @@ class SuperforecasterDelphiForecast(ForecastStrategy):
                         market=market,
                         briefing_payload=briefing_payload,
                         supplemental_research=supplemental,
+                        research_date=research_date,
                     ),
                     options=request_kwargs,
                     tools=runtime.tools,

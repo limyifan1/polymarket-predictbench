@@ -141,10 +141,14 @@ class MarketService:
         """Adapt repository event groups into the API schema."""
 
         markets = self._normalize_markets(group.markets, forecast_map=forecast_map)
+        categories = list(dict.fromkeys(
+            market.category for market in markets if market.category
+        ))
         if group.event is not None:
             event_model = Event.model_validate(group.event)
             return EventWithMarkets(
                 **event_model.model_dump(),
+                categories=categories,
                 markets=markets,
                 market_count=len(markets),
                 research=research_map.get(event_model.event_id, []),
@@ -161,6 +165,7 @@ class MarketService:
             icon_url=primary.icon_url if primary else None,
             series_slug=None,
             series_title=None,
+            categories=categories,
             markets=markets,
             market_count=len(markets),
             research=[],

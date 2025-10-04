@@ -178,8 +178,14 @@ def test_different_overrides_disable_sharing() -> None:
     record_b = records["suite_b"]["shared_research"]
     assert record_a.bundle_identity is None
     assert record_b.bundle_identity is None
-    assert record_a.output.payload == {"label": "suite_a"}
-    assert record_b.output.payload == {"label": "suite_b"}
+    payload_a = record_a.output.payload
+    payload_b = record_b.output.payload
+    assert payload_a is not None
+    assert payload_b is not None
+    assert payload_a["label"] == "suite_a"
+    assert payload_b["label"] == "suite_b"
+    assert "generated_at" in payload_a
+    assert "generated_at" in payload_b
 
     meta_a = meta_index[("suite_a", ExperimentStage.RESEARCH, "shared_research")]
     meta_b = meta_index[("suite_b", ExperimentStage.RESEARCH, "shared_research")]

@@ -80,6 +80,7 @@ class MarketList(BaseModel):
 
 
 class EventWithMarkets(Event):
+    categories: list[str] = Field(default_factory=list)
     markets: list[Market] = Field(default_factory=list)
     market_count: int
     research: list["ResearchArtifact"] = Field(default_factory=list)

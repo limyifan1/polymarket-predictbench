@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Mapping, Protocol, Sequence
 
 from app.domain import NormalizedEvent, NormalizedMarket
@@ -29,6 +30,12 @@ class ResearchOutput:
     artifact_uri: str | None = None
     artifact_hash: str | None = None
     diagnostics: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.payload, dict) and "generated_at" not in self.payload:
+            self.payload["generated_at"] = (
+                datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            )
 
 
 @dataclass(slots=True)

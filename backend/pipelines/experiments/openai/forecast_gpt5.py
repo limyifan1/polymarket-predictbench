@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from loguru import logger
@@ -18,6 +19,22 @@ from ..base import (
 from ...context import PipelineContext
 from ..llm_support import resolve_llm_request
 from .base import DEFAULT_FORECAST_MODEL, _format_market, _strategy_stage_name
+
+
+def _extract_research_date(payload: Mapping[str, Any] | None) -> date | None:
+    if not isinstance(payload, Mapping):
+        return None
+    generated_at = payload.get("generated_at")
+    if not isinstance(generated_at, str):
+        return None
+    candidate = generated_at.strip()
+    if not candidate:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return timestamp.date()
 
 
 def _forecast_schema(market: NormalizedMarket) -> tuple[str, dict[str, Any]]:
@@ -92,17 +109,20 @@ class GPT5ForecastStrategy(ForecastStrategy):
         *,
         market: NormalizedMarket,
         research_payloads: list[tuple[str, dict[str, Any]]],
+        research_date: date,
     ) -> list[dict[str, str]]:
         context_chunks = [
             f"Research ({name}):\n{json.dumps(payload, indent=2, ensure_ascii=False)}"
             for name, payload in research_payloads
         ]
         combined_context = "\n\n".join(context_chunks)
+        generated_on = research_date.isoformat()
         system = (
             "You are a probabilistic forecaster. Use the provided research to produce calibrated outcome probabilities."
         )
         user = (
-            "Produce probabilities that sum to 1 for the market's outcomes. Reference the research evidence in your rationale."
+            f"The latest research artifacts were generated on {generated_on}."
+            "\n\nProduce probabilities that sum to 1 for the market's outcomes. Reference the research evidence in your rationale."
             "\n\nMarket context:\n"
             f"{_format_market(market, include_contract_prices=False)}"
             "\n\nResearch context:\n"
@@ -143,6 +163,7 @@ class GPT5ForecastStrategy(ForecastStrategy):
                 runtime.json_mode_kwargs(schema_name=schema_name, schema=schema)
             )
             research_payloads: list[tuple[str, dict[str, Any]]] = []
+            research_dates: list[date] = []
             for name in self.requires:
                 artifact = research_artifacts.get(name)
                 if not artifact or artifact.payload is None:
@@ -150,12 +171,18 @@ class GPT5ForecastStrategy(ForecastStrategy):
                         f"Forecast '{self.name}' missing required research artifact '{name}'"
                     )
                 research_payloads.append((name, artifact.payload))
+                generated_at = _extract_research_date(artifact.payload)
+                if generated_at is not None:
+                    research_dates.append(generated_at)
+
+            research_date = max(research_dates) if research_dates else context.run_date
 
             try:
                 response = runtime.invoke(
                     messages=self.build_messages(
                         market=market,
                         research_payloads=research_payloads,
+                        research_date=research_date,
                     ),
                     options=request_kwargs,
                     tools=runtime.tools,
