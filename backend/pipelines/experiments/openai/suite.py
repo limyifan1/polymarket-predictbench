@@ -14,7 +14,7 @@ def build_openai_suite() -> BaseExperimentSuite:
     """Return the configured OpenAI experiment suite."""
 
     research_strategies = (
-        # strategy(OpenAIDeepResearchNarrative),
+        strategy(OpenAIDeepResearchNarrative),
         strategy(OpenAIWebSearchResearch),
         strategy(AtlasResearchSweep),
         strategy(HorizonSignalTimeline),
