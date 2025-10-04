@@ -151,7 +151,16 @@ def _apply_schema_updates() -> None:
     _ensure_column(engine, "experiment_results", "stage", "VARCHAR")
     _ensure_column(engine, "experiment_results", "variant_name", "VARCHAR")
     _ensure_column(engine, "experiment_results", "variant_version", "VARCHAR")
+    _ensure_column(engine, "research_artifacts", "experiment_run_id", "VARCHAR")
     _ensure_column(engine, "research_artifacts", "research_run_id", "VARCHAR")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE research_artifacts"
+                " SET experiment_run_id = research_run_id"
+                " WHERE experiment_run_id IS NULL AND research_run_id IS NOT NULL"
+            )
+        )
     _backfill_processed_event_keys()
 
 

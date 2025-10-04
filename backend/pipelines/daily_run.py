@@ -597,6 +597,7 @@ def _persist_event_group(
                     processing_repo.record_research_artifact(
                         ResearchArtifactInput(
                             artifact_id=record.artifact_id,
+                            experiment_run_id=record.meta.run_identifier,
                             research_run_id=record.meta.run_identifier,
                             processed_market_id=None,
                             processed_event_id=processed_event.processed_event_id,

@@ -287,6 +287,10 @@ def _persist_event_bundle(
                     )
                     continue
 
+                experiment_run_id = (
+                    research_entry.get("experiment_run_id") or research_run_id
+                )
+
                 artifact_id = research_entry.get("artifact_id") or str(uuid4())
                 payload = _enrich_payload(
                     research_entry.get("payload"),
@@ -296,6 +300,7 @@ def _persist_event_bundle(
                 processing_repo.record_research_artifact(
                     ResearchArtifactInput(
                         artifact_id=artifact_id,
+                        experiment_run_id=experiment_run_id,
                         research_run_id=research_run_id,
                         processed_market_id=None,
                         processed_event_id=processed_event.processed_event_id,
@@ -436,4 +441,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -64,18 +64,21 @@ class ExperimentRepository:
     # ------------------------------------------------------------------
     # Event-level research artifacts
 
-    def load_event_research(self, event_ids: Sequence[str]) -> list[EventResearchBundle]:
+    def load_event_research(
+        self, event_ids: Sequence[str]
+    ) -> list[EventResearchBundle]:
         if not event_ids:
             return []
 
-        query: Select[tuple[
-            ResearchArtifactRecord,
-            ResearchRunRecord,
-            ExperimentDefinition,
-            ProcessedEvent,
-            ProcessingRun |
-            None,
-        ]] = (
+        query: Select[
+            tuple[
+                ResearchArtifactRecord,
+                ResearchRunRecord,
+                ExperimentDefinition,
+                ProcessedEvent,
+                ProcessingRun | None,
+            ]
+        ] = (
             select(
                 ResearchArtifactRecord,
                 ResearchRunRecord,
@@ -87,6 +90,7 @@ class ExperimentRepository:
                 ResearchRunRecord,
                 ResearchArtifactRecord.research_run_id
                 == ResearchRunRecord.research_run_id,
+                isouter=True,
             )
             .join(
                 ExperimentDefinition,
@@ -128,18 +132,21 @@ class ExperimentRepository:
     # ------------------------------------------------------------------
     # Market-level forecast results
 
-    def load_market_forecasts(self, market_ids: Sequence[str]) -> list[MarketForecastBundle]:
+    def load_market_forecasts(
+        self, market_ids: Sequence[str]
+    ) -> list[MarketForecastBundle]:
         if not market_ids:
             return []
 
-        query: Select[tuple[
-            ExperimentResultRecord,
-            ExperimentRunRecord,
-            ExperimentDefinition,
-            ProcessedMarket,
-            ProcessingRun |
-            None,
-        ]] = (
+        query: Select[
+            tuple[
+                ExperimentResultRecord,
+                ExperimentRunRecord,
+                ExperimentDefinition,
+                ProcessedMarket,
+                ProcessingRun | None,
+            ]
+        ] = (
             select(
                 ExperimentResultRecord,
                 ExperimentRunRecord,
@@ -180,12 +187,14 @@ class ExperimentRepository:
             return []
 
         result_ids = [row[0].experiment_result_id for row in rows]
-        dependency_query: Select[tuple[
-            ForecastResearchLink,
-            ResearchArtifactRecord,
-            ResearchRunRecord,
-            ExperimentDefinition,
-        ]] = (
+        dependency_query: Select[
+            tuple[
+                ForecastResearchLink,
+                ResearchArtifactRecord,
+                ResearchRunRecord,
+                ExperimentDefinition,
+            ]
+        ] = (
             select(
                 ForecastResearchLink,
                 ResearchArtifactRecord,
@@ -198,7 +207,8 @@ class ExperimentRepository:
             )
             .join(
                 ResearchRunRecord,
-                ResearchArtifactRecord.research_run_id == ResearchRunRecord.research_run_id,
+                ResearchArtifactRecord.research_run_id
+                == ResearchRunRecord.research_run_id,
             )
             .join(
                 ExperimentDefinition,
@@ -220,7 +230,13 @@ class ExperimentRepository:
             )
 
         bundles: list[MarketForecastBundle] = []
-        for result, experiment_run, experiment, processed_market, processing_run in rows:
+        for (
+            result,
+            experiment_run,
+            experiment,
+            processed_market,
+            processing_run,
+        ) in rows:
             bundles.append(
                 MarketForecastBundle(
                     market_id=processed_market.market_id,
@@ -229,9 +245,7 @@ class ExperimentRepository:
                     experiment_run=experiment_run,
                     experiment=experiment,
                     processing_run=processing_run,
-                    dependencies=dependency_map.get(
-                        result.experiment_result_id, []
-                    ),
+                    dependencies=dependency_map.get(result.experiment_result_id, []),
                 )
             )
         return bundles

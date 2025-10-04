@@ -12,6 +12,7 @@ from app.models import (
     ExperimentDefinition,
     ExperimentResultRecord,
     ExperimentRunRecord,
+    ExperimentStage,
     ForecastResearchLink,
     ProcessedContract,
     ProcessedEvent,
@@ -226,6 +227,30 @@ class ProcessingRepository:
             version=payload.strategy_version,
             description=payload.description,
         )
+        experiment_run = self._session.get(
+            ExperimentRunRecord, payload.research_run_id
+        )
+        if experiment_run:
+            experiment_run.stage = ExperimentStage.RESEARCH.value
+            experiment_run.status = payload.status
+            experiment_run.started_at = payload.started_at
+            experiment_run.finished_at = payload.finished_at
+            experiment_run.error_message = payload.error_message
+            experiment_run.run_id = payload.run_id
+            experiment_run.experiment = definition
+        else:
+            experiment_run = ExperimentRunRecord(
+                experiment_run_id=payload.research_run_id,
+                run_id=payload.run_id,
+                experiment=definition,
+                stage=ExperimentStage.RESEARCH.value,
+                status=payload.status,
+                started_at=payload.started_at,
+                finished_at=payload.finished_at,
+                error_message=payload.error_message,
+            )
+            self._session.add(experiment_run)
+
         existing = self._session.get(ResearchRunRecord, payload.research_run_id)
         if existing:
             existing.status = payload.status
@@ -259,6 +284,7 @@ class ProcessingRepository:
     def record_research_artifact(self, payload: ResearchArtifactInput) -> ResearchArtifactRecord:
         existing = self._session.get(ResearchArtifactRecord, payload.artifact_id)
         if existing:
+            existing.experiment_run_id = payload.experiment_run_id
             existing.research_run_id = payload.research_run_id
             existing.processed_market_id = payload.processed_market_id
             existing.processed_event_id = payload.processed_event_id
@@ -271,6 +297,7 @@ class ProcessingRepository:
 
         artifact = ResearchArtifactRecord(
             artifact_id=payload.artifact_id,
+            experiment_run_id=payload.experiment_run_id,
             research_run_id=payload.research_run_id,
             processed_market_id=payload.processed_market_id,
             processed_event_id=payload.processed_event_id,

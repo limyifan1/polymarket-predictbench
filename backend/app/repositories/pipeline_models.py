@@ -68,6 +68,7 @@ class ExperimentResultInput:
 @dataclass(slots=True)
 class ResearchArtifactInput:
     artifact_id: str
+    experiment_run_id: str
     research_run_id: str
     processed_market_id: str | None
     processed_event_id: str | None

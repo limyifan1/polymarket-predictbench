@@ -306,6 +306,9 @@ class ResearchArtifactRecord(Base):
     __tablename__ = "research_artifacts"
 
     artifact_id: Mapped[str] = mapped_column(String, primary_key=True)
+    experiment_run_id: Mapped[str] = mapped_column(
+        String, ForeignKey("experiment_runs.experiment_run_id"), nullable=False
+    )
     research_run_id: Mapped[str] = mapped_column(
         String, ForeignKey("research_runs.research_run_id"), nullable=False
     )
@@ -327,6 +330,7 @@ class ResearchArtifactRecord(Base):
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
 
+    experiment_run: Mapped[ExperimentRunRecord] = relationship("ExperimentRunRecord")
     research_run: Mapped[ResearchRunRecord] = relationship(
         "ResearchRunRecord", back_populates="artifacts"
     )
