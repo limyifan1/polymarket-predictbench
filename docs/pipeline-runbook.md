@@ -136,6 +136,12 @@ printed summary.
 - **Missing forecasts** – if all forecasts skip or fail, the run logs a
   `no_forecast_results` failure so downstream analysis can filter affected
   markets.
+- **OpenAI transient errors** – the OpenAI provider now retries transport/5xx
+  failures with exponential backoff, automatically falling back to non-stream
+  requests after repeated `RemoteProtocolError`/`incomplete chunked read`
+  events. If retries still exhaust, lower `PIPELINE_EVENT_BATCH_SIZE` (or pass
+  `--event-batch-size 2`) before re-running and share the logged request IDs
+  with OpenAI support.
 - **Previously processed events** – the run logs a skip message and continues
   without reissuing LLM calls when the `event_key` already exists. This makes
   reruns idempotent even after partial failures.

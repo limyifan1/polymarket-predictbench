@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import inspect
 import json
+import random
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
-from openai import APITimeoutError, OpenAI
+from http.client import IncompleteRead
+
+import httpx
+from openai import APIError, APIStatusError, APITimeoutError, OpenAI
 from loguru import logger
 
 from app.core.config import Settings
@@ -23,6 +27,58 @@ _DEFAULT_STAGE_MODELS: dict[str, str] = {
 
 _BACKGROUND_DEFAULT_POLL_INTERVAL_SECONDS = 30.0
 _BACKGROUND_DEFAULT_MAX_WAIT_SECONDS = 3600.0  # 1 hour
+_STREAM_MAX_ATTEMPTS = 3
+_TOTAL_MAX_ATTEMPTS = 5
+_RETRY_BASE_SLEEP_SECONDS = 1.5
+_RETRY_MAX_SLEEP_SECONDS = 10.0
+_RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+
+
+def _extract_request_id(exc: Exception) -> str | None:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            request_id = response.headers.get("x-request-id")
+            if isinstance(request_id, str) and request_id:
+                return request_id
+        except Exception:  # noqa: BLE001 - defensive
+            pass
+    request_id = getattr(exc, "request_id", None)
+    if isinstance(request_id, str) and request_id:
+        return request_id
+    return None
+
+
+def _should_retry_exception(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.RemoteProtocolError, IncompleteRead, APITimeoutError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in _RETRYABLE_STATUS_CODES
+    if isinstance(exc, APIError):
+        status = getattr(exc, "status_code", None)
+        if isinstance(status, int) and status in _RETRYABLE_STATUS_CODES:
+            return True
+    return False
+
+
+def _retry_sleep_seconds(attempt: int) -> float:
+    backoff = _RETRY_BASE_SLEEP_SECONDS * (2 ** max(attempt - 1, 0))
+    backoff = min(backoff, _RETRY_MAX_SLEEP_SECONDS)
+    jitter = random.uniform(0.0, 0.75)
+    return backoff + jitter
+
+
+def _exception_summary(exc: Exception, *, request_id: str | None = None) -> str:
+    parts = [exc.__class__.__name__]
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        parts.append(f"status={status}")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    message = str(exc)
+    if message:
+        parts.append(message)
+    return ": ".join([parts[0], " ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
 
 def _override_openai_client(settings: Settings, overrides: Mapping[str, Any]) -> OpenAI:
@@ -328,6 +384,72 @@ class OpenAIProvider(LLMProvider):
             return {"text": {"format": structured}}
         return {"response_format": structured}
 
+    def _invoke_stream_once(
+        self,
+        request,
+        *,
+        payload: Mapping[str, Any],
+        response_id_holder: dict[str, str | None],
+    ) -> tuple[Any, str | None]:
+
+        def _record_response_id(event: Mapping[str, Any] | Any) -> None:
+            response_obj = getattr(event, "response", None)
+            response_id = getattr(response_obj, "id", None)
+            if not isinstance(response_id, str):
+                response_id = getattr(event, "id", None)
+            if isinstance(response_id, str):
+                response_id_holder["id"] = response_id
+
+        stream_kwargs = dict(payload)
+
+        try:
+            with request.client.responses.stream(
+                **stream_kwargs,
+            ) as stream:
+                for event in stream:
+                    _record_response_id(event)
+                final_response = stream.get_final_response()
+                _record_response_id(final_response)
+                return final_response, response_id_holder.get("id")
+        except APITimeoutError:
+            response_id = response_id_holder.get("id")
+            if response_id:
+                try:
+                    logger.warning(
+                        "OpenAI stream timed out; retrieving cached response response_id={} experiment={} strategy={} stage={}",
+                        response_id,
+                        request.experiment_name,
+                        request.strategy_name,
+                        request.stage,
+                    )
+                    recovered = request.client.responses.retrieve(response_id)
+                    _record_response_id(recovered)
+                    return recovered, response_id_holder.get("id")
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to recover OpenAI response after timeout response_id={} experiment={} strategy={} stage={}",
+                        response_id,
+                        request.experiment_name,
+                        request.strategy_name,
+                        request.stage,
+                    )
+            raise
+
+    def _invoke_nonstream_once(
+        self,
+        request,
+        *,
+        payload: Mapping[str, Any],
+    ) -> tuple[Any, str | None]:
+        result = request.client.responses.create(**dict(payload))
+        response_id = getattr(result, "id", None)
+        if not isinstance(response_id, str):
+            response_obj = getattr(result, "response", None)
+            response_id = getattr(response_obj, "id", None)
+        if not isinstance(response_id, str):
+            response_id = None
+        return result, response_id
+
     def invoke(
         self,
         request,
@@ -353,57 +475,103 @@ class OpenAIProvider(LLMProvider):
         metadata.setdefault("stage", request.stage)
         payload["metadata"] = {k: v for k, v in metadata.items() if v}
 
-        response_id_holder: dict[str, str | None] = {"id": None}
-
-        def _record_response_id(event: Mapping[str, Any] | Any) -> None:
-            response_obj = getattr(event, "response", None)
-            response_id = getattr(response_obj, "id", None)
-            if not isinstance(response_id, str):
-                response_id = getattr(event, "id", None)
-            if isinstance(response_id, str):
-                response_id_holder["id"] = response_id
-
         background_mode = bool(payload.get("background"))
         if background_mode:
-            return self._invoke_background(
-                request=request,
-                payload=payload,
-                record_response_id=_record_response_id,
-                response_id_holder=response_id_holder,
-            )
+            response_id_holder: dict[str, str | None] = {"id": None}
 
-        stream_kwargs = dict(payload)
+            def _record_response_id(event: Mapping[str, Any] | Any) -> None:
+                response_obj = getattr(event, "response", None)
+                response_id = getattr(response_obj, "id", None)
+                if not isinstance(response_id, str):
+                    response_id = getattr(event, "id", None)
+                if isinstance(response_id, str):
+                    response_id_holder["id"] = response_id
 
-        try:
-            with request.client.responses.stream(
-                **stream_kwargs,
-            ) as stream:
-                for event in stream:
-                    _record_response_id(event)
-                final_response = stream.get_final_response()
-                _record_response_id(final_response)
-                return final_response
-        except APITimeoutError as exc:
-            response_id = response_id_holder["id"]
-            if response_id:
-                try:
-                    logger.warning(
-                        "OpenAI stream timed out; retrieving cached response response_id={} experiment={} strategy={} stage={}",
-                        response_id,
-                        request.experiment_name,
-                        request.strategy_name,
-                        request.stage,
+            try:
+                return self._invoke_background(
+                    request=request,
+                    payload=payload,
+                    record_response_id=_record_response_id,
+                    response_id_holder=response_id_holder,
+                )
+            except Exception as exc:  # noqa: BLE001
+                request_id = response_id_holder.get("id") or _extract_request_id(exc)
+                summary = _exception_summary(exc, request_id=request_id)
+                raise ExperimentExecutionError(summary) from exc
+
+        total_attempts = max(_TOTAL_MAX_ATTEMPTS, 1)
+        attempt = 0
+        stream_attempts = 0
+        use_stream = True
+        last_exc: Exception | None = None
+        last_request_id: str | None = None
+
+        while attempt < total_attempts:
+            attempt += 1
+            transport = "stream" if use_stream else "nonstream"
+            response_id_holder: dict[str, str | None] = {"id": None}
+
+            try:
+                if use_stream:
+                    response, request_id = self._invoke_stream_once(
+                        request,
+                        payload=payload,
+                        response_id_holder=response_id_holder,
                     )
-                    return request.client.responses.retrieve(response_id)
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Failed to recover OpenAI response after timeout response_id={} experiment={} strategy={} stage={}",
-                        response_id,
-                        request.experiment_name,
-                        request.strategy_name,
-                        request.stage,
+                else:
+                    response, request_id = self._invoke_nonstream_once(
+                        request,
+                        payload=payload,
                     )
-            raise exc
+                return response
+            except Exception as exc:  # noqa: BLE001
+                request_id = response_id_holder.get("id") or _extract_request_id(exc)
+                retryable = _should_retry_exception(exc) and attempt < total_attempts
+                diagnostics: dict[str, Any] = {
+                    "error_type": exc.__class__.__name__,
+                    "status": getattr(exc, "status_code", None),
+                    "request_id": request_id,
+                    "attempt": attempt,
+                    "transport": transport,
+                }
+                logger.warning(
+                    "OpenAI request failed run={} experiment={} strategy={} stage={} diagnostics={} retryable={}",
+                    request.run_id or "n/a",
+                    request.experiment_name,
+                    request.strategy_name,
+                    request.stage,
+                    diagnostics,
+                    retryable,
+                )
+
+                if not retryable:
+                    summary = _exception_summary(exc, request_id=request_id)
+                    raise ExperimentExecutionError(summary) from exc
+
+                last_exc = exc
+                last_request_id = request_id
+
+                if use_stream:
+                    stream_attempts += 1
+                    if stream_attempts >= _STREAM_MAX_ATTEMPTS:
+                        use_stream = False
+                        logger.warning(
+                            "OpenAI request switching to non-stream mode run={} experiment={} strategy={} stage={} after {} stream attempts",
+                            request.run_id or "n/a",
+                            request.experiment_name,
+                            request.strategy_name,
+                            request.stage,
+                            stream_attempts,
+                        )
+                        continue
+
+                sleep_seconds = _retry_sleep_seconds(attempt)
+                time.sleep(sleep_seconds)
+
+        if last_exc is not None:
+            summary = _exception_summary(last_exc, request_id=last_request_id)
+            raise ExperimentExecutionError(summary) from last_exc
+        raise ExperimentExecutionError("OpenAI provider failed without raising an exception")
 
     def extract_json(self, response: Any) -> Mapping[str, Any]:
         text_candidate: str | None = None
