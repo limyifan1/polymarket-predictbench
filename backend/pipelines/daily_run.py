@@ -1895,6 +1895,27 @@ def run_pipeline(
 
                 if result.error_message:
                     failure_reason = f"experiment_failed: {result.error_message}"
+                    market_ids = [market.market_id for market in markets]
+                    suite_ids = sorted({suite.suite_id for suite in suites})
+                    log_event_key = event_key or request.key
+                    logger.error(
+                        "Experiment failure run={} event={} suites={} markets={} reason={}",
+                        run_id,
+                        log_event_key,
+                        ", ".join(suite_ids) if suite_ids else "<none>",
+                        ", ".join(market_ids) if market_ids else "<none>",
+                        result.error_message,
+                    )
+                    base_details: dict[str, Any] = {
+                        "message": result.error_message,
+                        "run_id": run_id,
+                        "event_key": log_event_key,
+                        "event_id": event_payload.event_id if event_payload else None,
+                        "event_slug": event_payload.slug if event_payload else None,
+                        "event_title": event_payload.title if event_payload else None,
+                        "suites": suite_ids,
+                        "market_ids": market_ids,
+                    }
                     for market in markets:
                         summary.failed_markets += 1
                         summary.failures.append(
@@ -1903,11 +1924,27 @@ def run_pipeline(
                                 "reason": failure_reason,
                             }
                         )
+                        logger.error(
+                            "Experiment failure run={} event={} market={} slug={} reason={}",
+                            run_id,
+                            log_event_key,
+                            market.market_id,
+                            market.slug or "<none>",
+                            result.error_message,
+                        )
+                        market_details = dict(base_details)
+                        market_details.update(
+                            {
+                                "market_id": market.market_id,
+                                "market_slug": market.slug,
+                                "market_question": market.question,
+                            }
+                        )
                         _record_processing_failure(
                             market_id=market.market_id,
                             reason="experiment_failed",
                             retriable=True,
-                            details={"message": result.error_message},
+                            details=market_details,
                         )
                     continue
 
