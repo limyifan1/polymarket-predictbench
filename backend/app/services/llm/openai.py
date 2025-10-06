@@ -31,7 +31,7 @@ _STREAM_MAX_ATTEMPTS = 3
 _TOTAL_MAX_ATTEMPTS = 5
 _RETRY_BASE_SLEEP_SECONDS = 1.5
 _RETRY_MAX_SLEEP_SECONDS = 10.0
-_RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _extract_request_id(exc: Exception) -> str | None:
@@ -49,14 +49,37 @@ def _extract_request_id(exc: Exception) -> str | None:
     return None
 
 
+def _status_code_from_exception(exc: Exception) -> int | None:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return status
+    return None
+
+
 def _should_retry_exception(exc: Exception) -> bool:
     if isinstance(exc, (httpx.RemoteProtocolError, IncompleteRead, APITimeoutError)):
         return True
     if isinstance(exc, APIStatusError):
         return exc.status_code in _RETRYABLE_STATUS_CODES
     if isinstance(exc, APIError):
-        status = getattr(exc, "status_code", None)
-        if isinstance(status, int) and status in _RETRYABLE_STATUS_CODES:
+        status = _status_code_from_exception(exc)
+        if status in _RETRYABLE_STATUS_CODES:
+            return True
+        error_type = getattr(exc, "type", None)
+        if isinstance(error_type, str) and error_type.lower() in {
+            "api_error",
+            "internal_server_error",
+            "rate_limit_error",
+            "server_error",
+        }:
+            return True
+        message = str(exc)
+        if isinstance(message, str) and "retry your request" in message.lower():
             return True
     return False
 
@@ -70,7 +93,7 @@ def _retry_sleep_seconds(attempt: int) -> float:
 
 def _exception_summary(exc: Exception, *, request_id: str | None = None) -> str:
     parts = [exc.__class__.__name__]
-    status = getattr(exc, "status_code", None)
+    status = _status_code_from_exception(exc)
     if isinstance(status, int):
         parts.append(f"status={status}")
     if request_id:
