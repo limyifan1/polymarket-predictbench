@@ -97,3 +97,43 @@
 - [ ] Confirmed API + frontend dev servers start without errors.
 - [ ] Executed `npm run lint` for UI changes and manual sanity checks for backend changes.
 - [ ] Added/updated docs or comments for non-obvious logic.
+
+## Debugging Playbooks
+The playbooks below live in this guide until we decide on a permanent home. Quote them verbatim when reinforcing expectations; softening the language breaks the safeguards they encode.
+
+### Systematic Debugging — Four-phase root cause framework
+- Iron law: `NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST`. Move through Root Cause → Pattern → Hypothesis → Implementation in order; skipping a phase voids the process.
+- Phase 1 demands reproducibility, review of recent changes, and boundary-by-boundary instrumentation so you know exactly where data fails.
+- Phase 3 permits one hypothesis at a time. When a test fails, stop, return to Phase 1, and reformulate—never stack fixes.
+- Phase 4 requires proving the bug before the fix (failing test or reproduction), applying a single change, and verifying afterward. Three failed fixes means the architecture is wrong: escalate instead of trying a fourth.
+- Red-flag phrases—“should work”, “one more fix”, “seems fine”—are automatic stop signals. Call them out and rewind to Phase 1.
+- Creation notes: The original authors hardened the language against pressure. If you feel tempted to weaken a rule, reread this section before editing.
+
+### Root Cause Tracing — Call-chain forensics
+- Principle: track symptoms backward until you identify the first bad input; never settle for treating the point where the error appears.
+- Follow the loop: observe the symptom → identify the immediate cause → ask who called it with bad data → keep tracing upward until you reach the origin.
+- When manual tracing stalls, instrument the suspect function (e.g., capture `new Error().stack`) and log directory, cwd, environment, timestamps.
+- Use the decision diagrams in the original write-up as reminders: if you’re tempted to “fix at symptom,” you missed the real source.
+- Companion to Systematic Debugging: tracing reveals the source so that Phase 4 can harden the entry point.
+
+### Defense-in-Depth Validation — Layered protection
+- Validate at every layer data passes through so bad inputs become structurally impossible.
+- Layer 1 (entry): reject obviously invalid payloads at boundaries (API, CLI, ingestion request).
+- Layer 2 (business logic): enforce operation-specific invariants before mutating state.
+- Layer 3 (environment guards): block context-specific hazards (e.g., refuse `git init` outside temp dirs during tests, enforce Supabase SSL).
+- Layer 4 (debug instrumentation): log directory, cwd, and stack before risky operations to aid post-mortems.
+- Four-step remediation loop: trace the data flow, list checkpoints, add validation at each layer, and try to bypass each layer to confirm coverage.
+- Apply analogous layers in pipeline changes—request filters, suite guards, environment safety rails, structured logging.
+
+### Verification Before Completion — Evidence-first handshake
+- Iron law: `NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE`. Every success statement must cite the command you just executed.
+- Gate function: identify the proving command, run it, read the output end-to-end, verify it supports the claim, then communicate.
+- Prior runs, partial checks, or “should pass” are invalid. Tiredness and deadlines are not exemptions.
+- Tie this playbook to the agent checklist: never check an item until the verifying command has run in-session.
+
+## Practice Drills
+- **Academic quiz** — Ask the six questions from the original prompt (four phases, pre-fix requirements, failed hypothesis behavior, multiple-fix guidance, handling uncertainty, skipping for simple bugs). Answers must quote Systematic Debugging verbatim.
+- **Pressure Test 1: Production outage** — Choose between rapid retries vs. full investigation; debrief against the Iron Law to reinforce why skipping Phase 1 is failure.
+- **Pressure Test 2: Exhaustion and sunk cost** — Scenario highlights why “good enough” timeouts violate the process; use it to rehearse restarting from Phase 1 when the last fix fails.
+- **Pressure Test 3: Authority pressure** — Practice pushing back when senior engineers prefer shortcuts. Reinforces quoting the playbooks rather than appealing to hierarchy.
+- Encourage engineers to answer honestly, then review the decisions against the stop signals and Iron Laws above.
