@@ -89,6 +89,23 @@ def _build_event(raw_market: dict[str, Any]) -> NormalizedEvent | None:
     )
 
 
+def _parse_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value in {"1", 1, "true", "True", "TRUE"}:
+        return True
+    if value in {"0", 0, "false", "False", "FALSE"}:
+        return False
+    return None
+
+
+def _clean_string(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -201,6 +218,104 @@ def normalize_market(raw_market: dict[str, Any]) -> NormalizedMarket:
     close_time = _parse_datetime(raw_market.get("closeTime") or raw_market.get("endDate"))
     event = _build_event(raw_market)
 
+    raw_status = raw_market.get("status")
+    status_value = raw_status.lower() if isinstance(raw_status, str) else None
+    if status_value is None:
+        closed_flag = _parse_bool(raw_market.get("closed"))
+        if closed_flag:
+            status_value = "closed"
+        else:
+            status_value = "open"
+
+    is_resolved = _parse_bool(raw_market.get("resolved") or raw_market.get("isResolved"))
+    if is_resolved is None and status_value:
+        lowered_status = status_value.lower()
+        if lowered_status in {"resolved", "settled"}:
+            is_resolved = True
+        elif lowered_status in {"open", "trading", "pending"}:
+            is_resolved = False
+
+    auto_resolved = _parse_bool(
+        raw_market.get("automaticallyResolved")
+        or raw_market.get("autoResolved")
+    )
+    if is_resolved is None and auto_resolved is not None:
+        is_resolved = auto_resolved
+
+    uma_status = raw_market.get("umaResolutionStatus") or raw_market.get(
+        "uma_resolution_status"
+    )
+    if is_resolved is None and isinstance(uma_status, str):
+        lowered = uma_status.lower()
+        if lowered in {"resolved", "confirmed", "settled"}:
+            is_resolved = True
+        elif lowered in {"proposed", "pending", "disputed", "open"}:
+            is_resolved = False
+
+    if is_resolved is None:
+        for candidate in _as_list(raw_market.get("umaResolutionStatuses")):
+            if not isinstance(candidate, str):
+                continue
+            lowered = candidate.lower()
+            if lowered in {"resolved", "confirmed", "settled"}:
+                is_resolved = True
+                break
+            if lowered in {"proposed", "pending", "disputed", "open"}:
+                is_resolved = False
+                break
+
+    if is_resolved is None and raw_market.get("resolvedBy"):
+        is_resolved = True
+
+    if is_resolved is None and (
+        raw_market.get("winningOutcome")
+        or raw_market.get("winning_outcome")
+        or raw_market.get("resolutionTime")
+    ):
+        is_resolved = True
+
+    resolution_time = _parse_datetime(
+        raw_market.get("resolutionTime")
+        or raw_market.get("resolvedTime")
+        or raw_market.get("settledAt")
+        or raw_market.get("closedTime")
+        or raw_market.get("umaEndDate")
+    )
+    resolution_source = _clean_string(
+        raw_market.get("resolutionSource")
+        or raw_market.get("resolution_source")
+        or raw_market.get("resolutionType")
+    )
+    if not resolution_source:
+        if auto_resolved:
+            resolution_source = "platform"
+        elif isinstance(uma_status, str) and uma_status.lower() in {
+            "resolved",
+            "confirmed",
+            "settled",
+        }:
+            resolution_source = "uma"
+    winning_outcome = _clean_string(
+        raw_market.get("winningOutcome")
+        or raw_market.get("winning_outcome")
+        or raw_market.get("resolvedOutcome")
+    )
+    payout_token = _clean_string(
+        raw_market.get("winningOutcomeToken")
+        or raw_market.get("payoutToken")
+        or raw_market.get("collateralToken")
+        or raw_market.get("payoutCurrency")
+    )
+    resolution_tx_hash = _clean_string(
+        raw_market.get("resolutionTxHash")
+        or raw_market.get("resolutionTransactionHash")
+        or raw_market.get("settlementTxHash")
+    )
+    resolution_notes = _clean_string(
+        raw_market.get("resolutionNotes")
+        or raw_market.get("resolutionDescription")
+    )
+
     return NormalizedMarket(
         market_id=market_id,
         slug=raw_market.get("slug"),
@@ -212,10 +327,17 @@ def normalize_market(raw_market: dict[str, Any]) -> NormalizedMarket:
         volume_usd=_parse_float(raw_market.get("volume") or raw_market.get("volumeUsd")),
         liquidity_usd=_parse_float(raw_market.get("liquidity") or raw_market.get("liquidityUsd")),
         fee_bps=_normalize_fee_bps(raw_market.get("fee")),
-        status=str(raw_market.get("status") or "open").lower(),
+        status=status_value,
         description=raw_market.get("description"),
         icon_url=raw_market.get("icon") or raw_market.get("image"),
         event=event,
         contracts=contracts,
         raw_data=raw_market,
+        is_resolved=is_resolved,
+        resolved_at=resolution_time,
+        resolution_source=resolution_source,
+        winning_outcome=winning_outcome,
+        payout_token=payout_token,
+        resolution_tx_hash=resolution_tx_hash,
+        resolution_notes=resolution_notes,
     )

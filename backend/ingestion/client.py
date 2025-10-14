@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from collections.abc import Sequence
 from typing import Any, Iterable
 
@@ -149,6 +148,40 @@ class PolymarketClient:
 
             if not cursor and len(raw_markets) < self.page_size:
                 break
+
+    def fetch_market(self, market_id: str) -> dict[str, Any] | None:
+        """Return a single market payload when the API exposes it."""
+
+        path = f"{self.markets_path.rstrip('/')}/{market_id}"
+        try:
+            response = self.client.get(path)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning("Polymarket market {} was not found", market_id)
+                return None
+            logger.error("Polymarket market {} request failed: {}", market_id, exc)
+            return None
+        except httpx.HTTPError as exc:  # pragma: no cover - network environment dependent
+            logger.error("Polymarket market {} request errored: {}", market_id, exc)
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:  # pragma: no cover - malformed payloads
+            logger.error("Polymarket market {} response was not JSON", market_id)
+            return None
+
+        if isinstance(payload, dict):
+            payload.setdefault("id", market_id)
+            return payload
+
+        logger.warning(
+            "Unexpected Polymarket payload for market {}: expected object, received {}",
+            market_id,
+            type(payload).__name__,
+        )
+        return None
 
     def close(self) -> None:
         self.client.close()

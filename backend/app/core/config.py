@@ -66,6 +66,14 @@ class Settings(BaseSettings):
         default="/markets",
         description="Relative path for markets endpoint",
     )
+    polymarket_graphql_url: AnyUrl = Field(
+        default="https://polymarket.com/api/graphql",
+        description="GraphQL endpoint for market resolution metadata",
+    )
+    uma_subgraph_url: AnyUrl | None = Field(
+        default="https://api.thegraph.com/subgraphs/name/polymarket/matic-markets",
+        description="UMA subgraph endpoint used for on-chain resolution reconciliation",
+    )
     ingestion_page_size: int = Field(
         200, description="Number of markets to fetch per page"
     )
@@ -90,6 +98,15 @@ class Settings(BaseSettings):
         default=10,
         description="Number of event groups processed concurrently during the daily pipeline",
         ge=1,
+    )
+    pipeline_resolution_batch_size: int = Field(
+        default=100,
+        description="Maximum number of markets processed concurrently during the resolution sweep",
+        ge=1,
+    )
+    pipeline_resolution_force_event_ids: list[str] | str = Field(
+        default_factory=list,
+        description="Optional comma-separated list of event IDs that should always be checked for resolution",
     )
     pipeline_db_retry_attempts: int = Field(
         default=3,
@@ -211,6 +228,20 @@ class Settings(BaseSettings):
             return [str(item).strip() for item in value if str(item).strip()]
         raise ValueError(
             "GEMINI_ADDITIONAL_API_KEYS must be provided as a list or comma-separated string"
+        )
+
+    @field_validator("pipeline_resolution_force_event_ids", mode="after")
+    @classmethod
+    def _parse_resolution_force_ids(cls, value: Any) -> list[str]:
+        if value in (None, "", []):
+            return []
+        if isinstance(value, str):
+            items = [token.strip() for token in value.split(",") if token.strip()]
+            return items
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        raise ValueError(
+            "PIPELINE_RESOLUTION_FORCE_EVENT_IDS must be provided as a list or comma-separated string",
         )
 
     @field_validator("pipeline_db_retry_backoff_seconds", mode="before")

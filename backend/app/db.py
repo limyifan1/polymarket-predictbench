@@ -143,6 +143,12 @@ def _backfill_processed_event_keys() -> None:
 
 
 def _apply_schema_updates() -> None:
+    dialect_name = engine.dialect.name
+    boolean_default = "BOOLEAN DEFAULT FALSE" if dialect_name == "postgresql" else "BOOLEAN DEFAULT 0"
+    false_literal = "FALSE" if dialect_name == "postgresql" else "0"
+    timestamp_type = (
+        "TIMESTAMP WITH TIME ZONE" if dialect_name == "postgresql" else "TIMESTAMP"
+    )
     _ensure_column(engine, "markets", "event_id", "VARCHAR")
     _ensure_column(engine, "processed_markets", "processed_event_id", "VARCHAR")
     _ensure_column(engine, "processed_events", "event_key", "VARCHAR")
@@ -153,12 +159,42 @@ def _apply_schema_updates() -> None:
     _ensure_column(engine, "experiment_results", "variant_version", "VARCHAR")
     _ensure_column(engine, "research_artifacts", "experiment_run_id", "VARCHAR")
     _ensure_column(engine, "research_artifacts", "research_run_id", "VARCHAR")
+    _ensure_column(engine, "markets", "is_resolved", boolean_default)
+    _ensure_column(engine, "markets", "resolved_at", timestamp_type)
+    _ensure_column(engine, "markets", "resolution_source", "VARCHAR(50)")
+    _ensure_column(engine, "markets", "winning_outcome", "VARCHAR(255)")
+    _ensure_column(engine, "markets", "payout_token", "VARCHAR(20)")
+    _ensure_column(engine, "markets", "resolution_tx_hash", "VARCHAR(66)")
+    _ensure_column(engine, "markets", "resolution_notes", "TEXT")
+    _ensure_column(engine, "events", "is_resolved", boolean_default)
+    _ensure_column(engine, "events", "resolved_at", timestamp_type)
+    _ensure_column(engine, "events", "resolution_source", "VARCHAR(50)")
     with engine.begin() as connection:
         connection.execute(
             text(
                 "UPDATE research_artifacts"
                 " SET experiment_run_id = research_run_id"
                 " WHERE experiment_run_id IS NULL AND research_run_id IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                f"UPDATE markets SET is_resolved = COALESCE(is_resolved, {false_literal})"
+            )
+        )
+        connection.execute(
+            text(
+                f"UPDATE events SET is_resolved = COALESCE(is_resolved, {false_literal})"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_markets_is_resolved ON markets (is_resolved)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_markets_event_is_resolved ON markets (event_id, is_resolved)"
             )
         )
     _backfill_processed_event_keys()

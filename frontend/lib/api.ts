@@ -14,6 +14,7 @@ export type MarketFilters = {
   limit?: number;
   offset?: number;
   dataset?: "local" | "production";
+  resolved_only?: boolean;
 };
 
 const DATE_END_SUFFIX = "T23:59:59Z";
@@ -43,12 +44,34 @@ export function parseFilters(searchParams: Record<string, string | string[] | un
 
   const closeAfterRaw = get("close_after");
   const closeBeforeRaw = get("close_before");
+  const statusRaw = get("status");
+  const resolvedOnlyRaw = get("resolved_only");
   const datasetRaw = (get("dataset") ?? "local").toLowerCase();
   const dataset: MarketFilters["dataset"] =
     datasetRaw === "production" || datasetRaw === "prod" ? "production" : "local";
 
+  let resolvedOnly = typeof resolvedOnlyRaw === "string"
+    ? ["1", "true", "yes", "on"].includes(resolvedOnlyRaw.toLowerCase())
+    : false;
+
+  let status = typeof statusRaw === "string" && statusRaw.trim().length > 0
+    ? statusRaw.toLowerCase()
+    : undefined;
+
+  if (status === "all") {
+    status = undefined;
+  }
+
+  if (status === "resolved") {
+    resolvedOnly = true;
+  }
+
+  if (resolvedOnly) {
+    status = "resolved";
+  }
+
   return {
-    status: get("status") ?? "open",
+    status,
     close_after: toISOStringOrNull(closeAfterRaw, DATE_START_SUFFIX),
     close_before: toISOStringOrNull(closeBeforeRaw, DATE_END_SUFFIX),
     min_volume: get("min_volume") ? Number.parseFloat(get("min_volume")!) : null,
@@ -57,11 +80,12 @@ export function parseFilters(searchParams: Record<string, string | string[] | un
     limit: get("limit") ? Number.parseInt(get("limit")!, 10) : 50,
     offset: get("offset") ? Number.parseInt(get("offset")!, 10) : 0,
     dataset,
+    resolved_only: resolvedOnly,
   };
 }
 
 function buildQuery(filters: MarketFilters): string {
-  const { dataset: _dataset, ...rest } = filters;
+  const { dataset: _dataset, resolved_only: _resolvedOnly, ...rest } = filters;
   const params = new URLSearchParams();
   if (rest.status) params.set("status", rest.status);
   if (rest.close_after) params.set("close_after", rest.close_after);

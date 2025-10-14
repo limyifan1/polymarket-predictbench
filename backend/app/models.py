@@ -8,6 +8,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     Numeric,
@@ -57,11 +58,28 @@ class Market(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     icon_url: Mapped[str | None] = mapped_column(String, nullable=True)
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    winning_outcome: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payout_token: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resolution_tx_hash: Mapped[str | None] = mapped_column(String(66), nullable=True)
+    resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     contracts: Mapped[list["Contract"]] = relationship(
         "Contract", back_populates="market", cascade="all, delete-orphan"
     )
     event: Mapped[Event | None] = relationship("Event", back_populates="markets")
+    uma_resolution_events: Mapped[list["UMAResolutionEvent"]] = relationship(
+        "UMAResolutionEvent",
+        back_populates="market",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_markets_is_resolved", "is_resolved"),
+        Index("ix_markets_event_is_resolved", "event_id", "is_resolved"),
+    )
 
 
 class Contract(Base):
@@ -92,10 +110,28 @@ class Event(Base):
     series_slug: Mapped[str | None] = mapped_column(String, nullable=True)
     series_title: Mapped[str | None] = mapped_column(String, nullable=True)
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     markets: Mapped[list[Market]] = relationship(
         "Market", back_populates="event", cascade="all, delete-orphan"
     )
+
+
+class UMAResolutionEvent(Base):
+    __tablename__ = "uma_resolution_events"
+
+    resolution_event_id: Mapped[str] = mapped_column(String, primary_key=True)
+    market_id: Mapped[str] = mapped_column(String, ForeignKey("markets.market_id"), nullable=False)
+    assertion_tx_hash: Mapped[str | None] = mapped_column(String(66), nullable=True)
+    resolution_tx_hash: Mapped[str | None] = mapped_column(String(66), nullable=True)
+    uma_outcome: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    market: Mapped[Market] = relationship("Market", back_populates="uma_resolution_events")
 
 
 class ProcessingRun(Base):

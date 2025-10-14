@@ -42,6 +42,38 @@ All commands assume you are inside `backend/` with dependencies installed and
 | Capture payload dumps | `uv run python -m pipelines.daily_run --debug-dump-dir ../debug-dumps` | Stores research/forecast request-response JSON per event. |
 | Batch events concurrently | `uv run python -m pipelines.daily_run --event-batch-size 8` | Overrides `PIPELINE_EVENT_BATCH_SIZE` (default 4). |
 
+## Resolution sweep
+
+Use `pipelines.resolution_run` to reconcile market outcomes independently from
+the daily ingestion job. The sweep reads unresolved markets from the local
+database, refreshes their status via the Polymarket REST API, and rolls the
+results up to the parent events. Every market update happens inside the normal
+`session_scope()` transaction so partial failures never corrupt existing data.
+
+### Typical commands
+
+| Goal | Command | Notes |
+| --- | --- | --- |
+| Check everything once | `uv run python -m pipelines.resolution_run` | Uses `PIPELINE_RESOLUTION_BATCH_SIZE` and sweeps all markets flagged `is_resolved = false`. |
+| Limit scope | `uv run python -m pipelines.resolution_run --limit 100` | Useful for incremental backfills or smoke tests. |
+| Focus on specific events | `uv run python -m pipelines.resolution_run --event-id 123 --event-id 456` | CLI flags stack with `PIPELINE_RESOLUTION_FORCE_EVENT_IDS`. |
+| Re-run recent markets | `uv run python -m pipelines.resolution_run --recent-hours 6` | Only rechecks markets touched within the last 6 hours (based on `last_synced_at`). |
+| Persist a JSON summary | `uv run python -m pipelines.resolution_run --summary-path ../resolution-summary.json` | Mirrors the daily run summary format with resolution-specific counters. |
+
+### Key flags
+
+- `--limit <int>` – cap the number of markets inspected during the sweep.
+- `--batch-size <int>` – override `PIPELINE_RESOLUTION_BATCH_SIZE` for tighter
+  batches when debugging.
+- `--event-id <id>` – repeatable; limits the sweep to explicit event IDs.
+- `--recent-hours <float>` – only revisit markets whose last sync happened
+  within the specified window.
+- `--summary-path <path>` – write a JSON artifact describing the run outcome.
+
+The GitHub Actions workflow (`.github/workflows/daily-pipeline.yml`) runs the
+resolution sweep immediately after the daily ingestion job, so production
+deployments reconcile market closures every morning without manual intervention.
+
 ## Key CLI flags
 - `--window-days <int>` – forward-looking horizon for market close dates.
 - `--target-date YYYY-MM-DD` – exact date to process (mutually exclusive with

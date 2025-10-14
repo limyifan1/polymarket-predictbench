@@ -34,6 +34,9 @@ class NormalizedEvent:
     series_slug: str | None
     series_title: str | None
     raw_data: dict[str, Any] | None
+    is_resolved: bool | None = None
+    resolved_at: datetime | None = None
+    resolution_source: str | None = None
 
 
 @dataclass(slots=True)
@@ -56,4 +59,11 @@ class NormalizedMarket:
     event: NormalizedEvent | None
     contracts: list[NormalizedContract] = field(default_factory=list)
     raw_data: dict[str, Any] | None = None
+    is_resolved: bool | None = None
+    resolved_at: datetime | None = None
+    resolution_source: str | None = None
+    winning_outcome: str | None = None
+    payout_token: str | None = None
+    resolution_tx_hash: str | None = None
+    resolution_notes: str | None = None
 

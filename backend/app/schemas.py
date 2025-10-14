@@ -43,6 +43,13 @@ class MarketBase(BaseModel):
     last_synced_at: datetime
     description: str | None = None
     icon_url: str | None = None
+    is_resolved: bool | None = None
+    resolved_at: datetime | None = None
+    resolution_source: str | None = None
+    winning_outcome: str | None = None
+    payout_token: str | None = None
+    resolution_tx_hash: str | None = None
+    resolution_notes: str | None = None
 
     @field_validator("volume_usd", "liquidity_usd", mode="before")
     @classmethod
@@ -62,6 +69,22 @@ class Event(BaseModel):
     icon_url: str | None = None
     series_slug: str | None = None
     series_title: str | None = None
+    is_resolved: bool | None = None
+    resolved_at: datetime | None = None
+    resolution_source: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class UMAResolutionEvent(BaseModel):
+    resolution_event_id: str
+    market_id: str
+    assertion_tx_hash: str | None = None
+    resolution_tx_hash: str | None = None
+    uma_outcome: str | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
 
     model_config = {"from_attributes": True}
 
@@ -70,6 +93,7 @@ class Market(MarketBase):
     contracts: list[Contract] = Field(default_factory=list)
     event: Event | None = None
     experiment_results: list["ForecastResult"] = Field(default_factory=list)
+    uma_resolution_events: list["UMAResolutionEvent"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

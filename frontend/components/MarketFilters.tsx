@@ -9,6 +9,7 @@ export type FilterState = {
   sort?: string;
   order?: string;
   dataset?: "local" | "production";
+  resolved_only?: boolean;
 };
 
 function isoToDateInput(value: string | null | undefined): string {
@@ -89,6 +90,16 @@ export function MarketFilters({ initial }: { initial: FilterState }) {
         </label>
       </div>
       <div className="filters__actions">
+        <label className="filters__checkbox">
+          <input
+            className="filters__checkbox-input"
+            type="checkbox"
+            name="resolved_only"
+            value="1"
+            defaultChecked={Boolean(initial.resolved_only)}
+          />
+          <span>Show resolved events only</span>
+        </label>
         <button type="submit" className="button button--primary">
           Apply filters
         </button>

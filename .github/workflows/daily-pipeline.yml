@@ -29,6 +29,7 @@ jobs:
       INGESTION_FILTERS: ${{ vars.INGESTION_FILTERS }}
       INGESTION_PAGE_SIZE: ${{ vars.INGESTION_PAGE_SIZE }}
       PIPELINE_EVENT_BATCH_SIZE: ${{ vars.PIPELINE_EVENT_BATCH_SIZE || '4' }}
+      PIPELINE_RESOLUTION_BATCH_SIZE: ${{ vars.PIPELINE_RESOLUTION_BATCH_SIZE || '100' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_ADDITIONAL_API_KEYS: ${{ secrets.GEMINI_ADDITIONAL_API_KEYS }}
@@ -85,10 +86,28 @@ jobs:
 
           python -m pipelines.daily_run "${ARGS[@]}"
 
+      - name: Run resolution sweep
+        if: ${{ success() }}
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          PIPELINE_RESOLUTION_BATCH_SIZE: ${{ env.PIPELINE_RESOLUTION_BATCH_SIZE }}
+        run: |
+          SUMMARY_PATH="${GITHUB_WORKSPACE}/artifacts/resolution-summary.json"
+          python -m pipelines.resolution_run --summary-path "${SUMMARY_PATH}"
+
       - name: Upload pipeline summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pipeline-summary
           path: artifacts/pipeline-summary.json
+          if-no-files-found: warn
+
+      - name: Upload resolution summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolution-summary
+          path: artifacts/resolution-summary.json
           if-no-files-found: warn

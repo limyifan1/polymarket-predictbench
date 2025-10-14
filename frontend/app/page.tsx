@@ -130,6 +130,7 @@ export default async function Home({
               sort: filters.sort,
               order: filters.order,
               dataset: filters.dataset,
+              resolved_only: filters.resolved_only ?? false,
             }}
           />
           <MarketTable events={events.items} />

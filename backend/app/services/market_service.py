@@ -37,6 +37,8 @@ class MarketQuery:
     close_after: datetime | None = None
     min_volume: float | None = None
     category: str | None = None
+    is_resolved: bool | None = None
+    resolution_source: str | None = None
     sort: str = "close_time"
     order: str = "asc"
     limit: int = 50
@@ -51,6 +53,8 @@ class MarketQuery:
             "close_after": self.close_after,
             "min_volume": self.min_volume,
             "category": self.category,
+            "is_resolved": self.is_resolved,
+            "resolution_source": self.resolution_source,
             "sort": self.sort,
             "order": self.order,
             "limit": self.limit,
@@ -155,6 +159,21 @@ class MarketService:
             )
 
         primary = markets[0] if markets else None
+        resolved_markets = [market for market in markets if market.is_resolved]
+        is_resolved = bool(markets) and len(resolved_markets) == len(markets)
+        resolved_at = (
+            max((market.resolved_at for market in resolved_markets if market.resolved_at), default=None)
+            if is_resolved
+            else None
+        )
+        source = None
+        if is_resolved:
+            counts: dict[str, int] = {}
+            for market in resolved_markets:
+                if market.resolution_source:
+                    counts[market.resolution_source] = counts.get(market.resolution_source, 0) + 1
+            if counts:
+                source = max(counts.items(), key=lambda item: item[1])[0]
         return EventWithMarkets(
             event_id=f"market:{primary.market_id}" if primary else "unknown",
             slug=primary.slug if primary else None,
@@ -165,6 +184,9 @@ class MarketService:
             icon_url=primary.icon_url if primary else None,
             series_slug=None,
             series_title=None,
+            is_resolved=is_resolved,
+            resolved_at=resolved_at,
+            resolution_source=source,
             categories=categories,
             markets=markets,
             market_count=len(markets),

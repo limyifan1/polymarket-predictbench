@@ -41,6 +41,14 @@ def _market_query(
     ] = None,
     min_volume: Annotated[float | None, Query(description="Minimum market volume in USD")] = None,
     category: Annotated[str | None, Query(description="Category filter")] = None,
+    resolved: Annotated[
+        bool | None,
+        Query(description="Filter by resolved status", example=True),
+    ] = None,
+    resolution_source: Annotated[
+        str | None,
+        Query(description="Filter by the recorded resolution source", example="platform"),
+    ] = None,
     sort: Annotated[
         str,
         Query(
@@ -63,6 +71,8 @@ def _market_query(
         close_after=close_after,
         min_volume=min_volume,
         category=category,
+        is_resolved=resolved,
+        resolution_source=resolution_source,
         sort=sort,
         order=order,
         limit=limit,

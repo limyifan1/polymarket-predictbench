@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any
+from typing import Any, Sequence
 
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import asc, desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.domain import NormalizedEvent, NormalizedMarket
@@ -50,6 +51,20 @@ class MarketRepository:
         existing.description = market.description
         existing.icon_url = market.icon_url
         existing.raw_data = market.raw_data
+        if market.is_resolved is not None:
+            existing.is_resolved = bool(market.is_resolved)
+        if market.resolved_at is not None:
+            existing.resolved_at = market.resolved_at
+        if market.resolution_source is not None:
+            existing.resolution_source = market.resolution_source
+        if market.winning_outcome is not None:
+            existing.winning_outcome = market.winning_outcome
+        if market.payout_token is not None:
+            existing.payout_token = market.payout_token
+        if market.resolution_tx_hash is not None:
+            existing.resolution_tx_hash = market.resolution_tx_hash
+        if market.resolution_notes is not None:
+            existing.resolution_notes = market.resolution_notes
 
         existing_contracts = {contract.contract_id: contract for contract in existing.contracts}
 
@@ -93,6 +108,12 @@ class MarketRepository:
         existing.series_slug = event.series_slug
         existing.series_title = event.series_title
         existing.raw_data = event.raw_data
+        if event.is_resolved is not None:
+            existing.is_resolved = bool(event.is_resolved)
+        if event.resolved_at is not None:
+            existing.resolved_at = event.resolved_at
+        if event.resolution_source is not None:
+            existing.resolution_source = event.resolution_source
         return existing
 
     # ------------------------------------------------------------------
@@ -106,6 +127,8 @@ class MarketRepository:
         close_after: datetime | None = None,
         min_volume: float | None = None,
         category: str | None = None,
+        is_resolved: bool | None = None,
+        resolution_source: str | None = None,
         sort: str = "close_time",
         order: str = "asc",
         limit: int = 50,
@@ -122,10 +145,18 @@ class MarketRepository:
             filters.append(Market.volume_usd >= min_volume)
         if category:
             filters.append(Market.category == category)
+        if is_resolved is not None:
+            filters.append(Market.is_resolved.is_(is_resolved))
+        if resolution_source:
+            filters.append(Market.resolution_source == resolution_source)
 
         query = (
             select(Market)
-            .options(selectinload(Market.contracts), selectinload(Market.event))
+            .options(
+                selectinload(Market.contracts),
+                selectinload(Market.event),
+                selectinload(Market.uma_resolution_events),
+            )
             .where(*filters)
         )
 
@@ -153,6 +184,8 @@ class MarketRepository:
         close_after: datetime | None = None,
         min_volume: float | None = None,
         category: str | None = None,
+        is_resolved: bool | None = None,
+        resolution_source: str | None = None,
         sort: str = "close_time",
         order: str = "asc",
         limit: int = 50,
@@ -169,10 +202,24 @@ class MarketRepository:
             filters.append(Market.volume_usd >= min_volume)
         if category:
             filters.append(Market.category == category)
+        if is_resolved is not None:
+            filters.append(Market.is_resolved.is_(is_resolved))
+        if resolution_source:
+            filters.append(
+                or_(
+                    Market.resolution_source == resolution_source,
+                    Event.resolution_source == resolution_source,
+                )
+            )
 
         query = (
             select(Market)
-            .options(selectinload(Market.contracts), selectinload(Market.event))
+            .join(Event, Market.event, isouter=True)
+            .options(
+                selectinload(Market.contracts),
+                selectinload(Market.event),
+                selectinload(Market.uma_resolution_events),
+            )
             .where(*filters)
         )
 
@@ -215,10 +262,73 @@ class MarketRepository:
     def get_market(self, market_id: str) -> Market | None:
         query = (
             select(Market)
-            .options(selectinload(Market.contracts), selectinload(Market.event))
+            .options(
+                selectinload(Market.contracts),
+                selectinload(Market.event),
+                selectinload(Market.uma_resolution_events),
+            )
             .where(Market.market_id == market_id)
         )
         return self._session.execute(query).scalar_one_or_none()
+
+    def get_unresolved_markets(
+        self,
+        *,
+        limit: int | None = None,
+        event_ids: Sequence[str] | None = None,
+        recent_cutoff: datetime | None = None,
+    ) -> list[Market]:
+        filters: list[Any] = [or_(Market.is_resolved.is_(False), Market.is_resolved.is_(None))]
+        if event_ids:
+            filters.append(Market.event_id.in_(list(event_ids)))
+        if recent_cutoff is not None:
+            filters.append(Market.last_synced_at >= recent_cutoff)
+
+        query = (
+            select(Market)
+            .options(
+                selectinload(Market.event),
+                selectinload(Market.uma_resolution_events),
+            )
+            .where(*filters)
+            .order_by(
+                Market.close_time.asc().nulls_last(),
+                Market.market_id.asc(),
+            )
+        )
+        if limit:
+            query = query.limit(limit)
+        return self._session.execute(query).scalars().all()
+
+    def refresh_event_resolution(self, event_id: str) -> Event | None:
+        event = self._session.get(Event, event_id)
+        if not event:
+            return None
+
+        markets = list(event.markets)
+        if not markets:
+            event.is_resolved = False
+            event.resolved_at = None
+            event.resolution_source = None
+            return event
+
+        unresolved = [market for market in markets if not market.is_resolved]
+        if unresolved:
+            event.is_resolved = False
+            event.resolved_at = None
+            event.resolution_source = None
+            return event
+
+        event.is_resolved = True
+        event.resolved_at = max(
+            (market.resolved_at for market in markets if market.resolved_at),
+            default=None,
+        )
+        sources = Counter(
+            market.resolution_source for market in markets if market.resolution_source
+        )
+        event.resolution_source = sources.most_common(1)[0][0] if sources else None
+        return event
 
 
 __all__ = ["MarketRepository", "EventGroupRecord"]
