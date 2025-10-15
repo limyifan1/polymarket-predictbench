@@ -131,6 +131,106 @@ The playbooks below live in this guide until we decide on a permanent home. Quot
 - Prior runs, partial checks, or “should pass” are invalid. Tiredness and deadlines are not exemptions.
 - Tie this playbook to the agent checklist: never check an item until the verifying command has run in-session.
 
+## Collaboration Playbooks
+
+### Preserving Productive Tensions (v1.1.0)
+
+- **Name:** Preserving Productive Tensions
+- **Description:** Recognize when disagreements surface valuable context and keep multiple valid approaches alive instead of forcing premature consensus.
+- **Use when:** We bounce between equally defensible approaches that optimize for competing legitimate priorities.
+
+#### Overview
+Some tensions signal healthy optionality rather than problems to eradicate. When a direction remains context-dependent, preserve the tension so teams can pick the right path for their realities. Only force a decision when the system truly demands commitment.
+
+#### Recognizing Productive Tensions
+- **Signals to preserve**
+  - Each option optimizes a different priority (cost vs. latency, simplicity vs. feature depth).
+  - Deployment context, not technical superiority, determines the “better” choice.
+  - Different users or environments would reasonably choose different defaults.
+  - The trade-off is enduring and will not disappear with clever engineering.
+  - Stakeholders surface conflicting but valid concerns.
+- **Signals to resolve**
+  - Supporting both paths would overwhelm the team’s delivery capacity.
+  - The options clash architecturally or cannot coexist cleanly.
+  - For this use case, one option satisfies constraints while the other fails to.
+  - Choosing one locks us into a one-way-door decision.
+  - Carrying both adds complexity without meaningful value.
+
+#### Preservation Patterns
+- **Configuration:** expose the choice as a setting when both implementations fit under the same architecture.
+  ```python
+  class Config:
+      mode: Literal["optimize_cost", "optimize_latency"]
+      # Keep each mode's implementation focused and independent
+  ```
+- **Parallel implementations:** maintain separate modules behind a shared contract when behaviors diverge heavily but clients can stay agnostic.
+  ```python
+  # processor/batch.py -> optimizes for cost
+  # processor/stream.py -> optimizes for latency
+  # Both expose: def process(data) -> Result
+  ```
+- **Documented trade-off:** record the decision explicitly when we cannot carry both paths in code yet the tension matters operationally.
+  ```markdown
+  ## Unresolved Tension: Authentication Strategy
+
+  Option A: JWT — Stateless and scales, but revocation is hard
+  Option B: Sessions — Easy revocation, but needs shared state
+
+  Why unresolved: Deployments weight these constraints differently
+  Decision deferred to: Deployment configuration
+  Review trigger: Revisit if 80%+ choose the same option
+  ```
+
+#### Red Flags — You're Forcing Resolution
+- Asking “which is best?” when both are valid in different contexts.
+- Demanding a single answer without naming the constraint that forces it.
+- Picking based on personal preference instead of user or deployment needs.
+- Pushing for resolution just to feel like progress.
+- Forcing consensus when diversity of approaches is the healthy outcome.
+Stop and reassess whenever one of these shows up.
+
+#### When Resolution Becomes Mandatory
+- **Cost cliff:** Maintaining both paths would materially slow the team.
+- **Hard conflict:** The approaches make incompatible architectural assumptions.
+- **Context fit:** Only one option actually meets the constraints in play.
+- **One-way door:** Switching later would be prohibitively expensive.
+- **Simplicity:** Carrying both adds complexity we will never redeem.
+Always ask, “Should we pick one path, or preserve both?” before committing.
+
+#### Documentation Pattern
+When we preserve a tension, document it so future contributors understand the context and the trigger for resolution.
+```markdown
+## Tension: [Name]
+
+**Context:** [Why this tension exists]
+
+**Option A:** [Approach]
+- Optimizes for: [Priority]
+- Trade-off: [Cost]
+- Best when: [Context]
+
+**Option B:** [Approach]
+- Optimizes for: [Different priority]
+- Trade-off: [Different cost]
+- Best when: [Different context]
+
+**Preservation strategy:** [Configuration/Parallel/Documented]
+
+**Resolution trigger:** [Conditions that force a single choice]
+```
+
+#### Examples
+- **Preserve:** Runtime toggle between cost-optimized and latency-optimized processing so deployments pick what they need.
+- **Resolve:** Choose SSE over WebSockets when we only require one-way communication.
+- **Defer:** Push the offline-mode decision back to product stakeholders—do not build both paths speculatively.
+
+#### Remember
+- Healthy tensions between valid priorities are features.
+- Premature consensus destroys optionality.
+- Favor configuration over hard-coded choices when it keeps options simple.
+- Capture trade-offs in docs so the tension stays visible.
+- Resolving is fine—just make sure the system truly requires it.
+
 ## Practice Drills
 - **Academic quiz** — Ask the six questions from the original prompt (four phases, pre-fix requirements, failed hypothesis behavior, multiple-fix guidance, handling uncertainty, skipping for simple bugs). Answers must quote Systematic Debugging verbatim.
 - **Pressure Test 1: Production outage** — Choose between rapid retries vs. full investigation; debrief against the Iron Law to reinforce why skipping Phase 1 is failure.
