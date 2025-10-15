@@ -1,0 +1,65 @@
+name: Resolution Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Daily Pipeline"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  run-resolution:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: '3.11'
+      ENVIRONMENT: production
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      PIPELINE_RESOLUTION_BATCH_SIZE: ${{ vars.PIPELINE_RESOLUTION_BATCH_SIZE || '100' }}
+    steps:
+      - name: Checkout repository (workflow_run)
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Checkout repository (manual dispatch)
+        if: github.event_name != 'workflow_run'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Verify Supabase configuration
+        run: |
+          if [ -z "${SUPABASE_DB_URL}" ]; then
+            echo 'SUPABASE_DB_URL secret is required' >&2
+            exit 1
+          fi
+
+      - name: Run resolution sweep
+        working-directory: backend
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+          PIPELINE_RESOLUTION_BATCH_SIZE: ${{ env.PIPELINE_RESOLUTION_BATCH_SIZE }}
+        run: |
+          SUMMARY_PATH="${GITHUB_WORKSPACE}/artifacts/resolution-summary.json"
+          python -m pipelines.resolution_run --summary-path "${SUMMARY_PATH}"
+
+      - name: Upload resolution summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolution-summary
+          path: artifacts/resolution-summary.json
+          if-no-files-found: warn
