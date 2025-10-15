@@ -103,13 +103,42 @@ engine, SessionLocal = _build_db_components(settings.resolved_database_url)
 Base = declarative_base()
 
 
-def _ensure_column(engine, table: str, column: str, definition: str) -> None:
+def _ensure_column(
+    engine,
+    table: str,
+    column: str,
+    definition: str,
+    *,
+    min_varchar_length: int | None = None,
+) -> None:
     inspector = inspect(engine)
-    columns = {col["name"] for col in inspector.get_columns(table)}
-    if column in columns:
+    columns = {col["name"]: col for col in inspector.get_columns(table)}
+    existing = columns.get(column)
+    if existing is None:
+        with engine.begin() as connection:
+            connection.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            )
         return
+
+    if min_varchar_length is None:
+        return
+
+    length = getattr(existing.get("type"), "length", None)
+    if length is None or length >= min_varchar_length:
+        return
+
+    # PostgreSQL enforces VARCHAR length limits; widen columns when needed.
+    if engine.dialect.name == "sqlite":
+        # SQLite ignores VARCHAR length declarations, so nothing to do.
+        return
+
     with engine.begin() as connection:
-        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+        connection.execute(
+            text(
+                f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({min_varchar_length})"
+            )
+        )
 
 
 def _backfill_processed_event_keys() -> None:
@@ -161,14 +190,26 @@ def _apply_schema_updates() -> None:
     _ensure_column(engine, "research_artifacts", "research_run_id", "VARCHAR")
     _ensure_column(engine, "markets", "is_resolved", boolean_default)
     _ensure_column(engine, "markets", "resolved_at", timestamp_type)
-    _ensure_column(engine, "markets", "resolution_source", "VARCHAR(50)")
+    _ensure_column(
+        engine,
+        "markets",
+        "resolution_source",
+        "VARCHAR(255)",
+        min_varchar_length=255,
+    )
     _ensure_column(engine, "markets", "winning_outcome", "VARCHAR(255)")
     _ensure_column(engine, "markets", "payout_token", "VARCHAR(20)")
     _ensure_column(engine, "markets", "resolution_tx_hash", "VARCHAR(66)")
     _ensure_column(engine, "markets", "resolution_notes", "TEXT")
     _ensure_column(engine, "events", "is_resolved", boolean_default)
     _ensure_column(engine, "events", "resolved_at", timestamp_type)
-    _ensure_column(engine, "events", "resolution_source", "VARCHAR(50)")
+    _ensure_column(
+        engine,
+        "events",
+        "resolution_source",
+        "VARCHAR(255)",
+        min_varchar_length=255,
+    )
     with engine.begin() as connection:
         connection.execute(
             text(

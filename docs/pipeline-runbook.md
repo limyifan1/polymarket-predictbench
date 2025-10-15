@@ -70,9 +70,11 @@ results up to the parent events. Every market update happens inside the normal
   within the specified window.
 - `--summary-path <path>` – write a JSON artifact describing the run outcome.
 
-The GitHub Actions workflow (`.github/workflows/daily-pipeline.yml`) runs the
-resolution sweep immediately after the daily ingestion job, so production
-deployments reconcile market closures every morning without manual intervention.
+The resolution sweep now ships in its own GitHub Actions workflow
+(`.github/workflows/resolution-pipeline.yml`). That workflow listens for the
+`Daily Pipeline` run to finish successfully (or can be triggered manually) and
+then executes `pipelines.resolution_run`, so production deployments still
+reconcile market closures every morning without manual intervention.
 
 ## Key CLI flags
 - `--window-days <int>` – forward-looking horizon for market close dates.

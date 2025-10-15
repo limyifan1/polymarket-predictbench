@@ -60,7 +60,7 @@ class Market(Base):
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolution_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    resolution_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
     winning_outcome: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payout_token: Mapped[str | None] = mapped_column(String(20), nullable=True)
     resolution_tx_hash: Mapped[str | None] = mapped_column(String(66), nullable=True)
@@ -112,7 +112,7 @@ class Event(Base):
     raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    resolution_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    resolution_source: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     markets: Mapped[list[Market]] = relationship(
         "Market", back_populates="event", cascade="all, delete-orphan"

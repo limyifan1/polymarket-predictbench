@@ -26,7 +26,7 @@ Extend existing models and add a supplemental table for UMA resolution events.
 | --- | --- | --- |
 | `is_resolved` | `Boolean`, default `False` | High-level event resolution flag (true if all linked markets resolved). |
 | `resolved_at` | `DateTime` | Timestamp derived from the latest market resolution among children. |
-| `resolution_source` | `String(50)` | Copy of the dominant resolution channel (`platform`, `on_chain`, `disputed`). |
+| `resolution_source` | `String(255)` | Copy of the dominant resolution channel (`platform`, `on_chain`, `disputed`) or upstream source URL. |
 
 ### `markets` table additions
 | Column | Type | Notes |
@@ -86,7 +86,7 @@ Add indexes on `is_resolved` and `(event_id, is_resolved)` to accelerate resolut
 ## Migration Strategy
 1. Generate Alembic migration adding new columns and `uma_resolution_events` table (ensure SQLite compatibility, cast booleans to integers for SQLite).
 2. Backfill historical data by running `pipelines.resolution_run --limit 500` repeatedly until all closed markets are processed.
-3. Schedule the resolution sweep as its own recurring job (for example, a cron or GitHub Actions workflow invoking `pipelines.resolution_run`). Our GitHub Actions `daily-pipeline` workflow now launches the sweep right after the ingestion job so the production database stays in sync without manual intervention, while the logical separation ensures failures or retries in one pipeline never block the other.
+3. Schedule the resolution sweep as its own recurring job (for example, a cron or GitHub Actions workflow invoking `pipelines.resolution_run`). Our GitHub Actions `resolution-pipeline` workflow now listens for the `Daily Pipeline` workflow to finish successfully and then launches the sweep, so the production database stays in sync without manual intervention while the logical separation ensures failures or retries in one pipeline never block the other.
 
 ## Documentation & Operations
 - Update `docs/pipeline-runbook.md` with resolution sweep run instructions and troubleshooting tips.
@@ -97,4 +97,3 @@ Add indexes on `is_resolved` and `(event_id, is_resolved)` to accelerate resolut
 - Confirm whether partial event resolutions (some markets resolved, others pending) should immediately flag the event as resolved or keep it `partial`—define business rule before final implementation.
 - Determine retention for UMA resolution events; consider pruning entries after N days once reconciled.
 - Align with frontend team on display format for multi-outcome `winning_outcome` strings (e.g., JSON vs. comma-separated labels).
-
